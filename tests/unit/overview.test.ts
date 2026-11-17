@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { aggregate, OverviewIndex } from "../../src/node/overview.js"
+import { aggregate, hash, OverviewIndex } from "../../src/node/overview.js"
 import { TranscriptLocator, resolveProjectsRoot } from "../../src/node/transcripts.js"
 import { localDay } from "../../src/shared/days.js"
 import type { SessionSummary } from "../../src/shared/types.js"
@@ -95,6 +95,34 @@ describe("OverviewIndex", () => {
 
     const reloaded = new OverviewIndex(new TranscriptLocator(projects), join(root, "storage", "cache.json"))
     expect((await reloaded.overview("today", now)).kpi.tokens).toBe(550)
+  })
+
+  it("answers unchanged for the version the caller holds until a transcript, the range or the day moves", async () => {
+    const projects = join(root, "projects")
+    const project = join(projects, "-work-demo")
+    const sessionId = "11111111-2222-3333-4444-555555555555"
+    await mkdir(project, { recursive: true })
+    const file = join(project, `${sessionId}.jsonl`)
+    const now = new Date().setHours(12, 0, 0, 0)
+    const minute = (offset: number) => (now - T0) / 60_000 - offset
+    await writeFile(file, `${JSON.stringify(assistant("m1", minute(4), [], { input_tokens: 300, output_tokens: 30 }))}\n`)
+    const index = new OverviewIndex(new TranscriptLocator(projects), join(root, "storage", "cache.json"))
+
+    const first = await index.load("today", undefined, now)
+    if (first.status !== "ok") throw new Error(first.status)
+    expect(first.overview.kpi.tokens).toBe(330)
+    expect(await index.load("today", first.version, now)).toEqual({ status: "unchanged", version: first.version })
+    expect((await index.load("7d", first.version, now)).status).toBe("ok")
+    expect((await index.load("today", first.version, now + DAY)).status).toBe("ok")
+
+    await appendFile(file, `${JSON.stringify(assistant("m2", minute(2), [], { input_tokens: 900, output_tokens: 30 }))}\n`)
+    const second = await index.load("today", first.version, now)
+    expect(second.status === "ok" && second.overview.kpi.tokens).toBe(1260)
+  })
+
+  it("hashes text to a short stable id", () => {
+    expect(hash("abc")).toBe(hash("abc"))
+    expect(hash("abc")).not.toBe(hash("abd"))
   })
 
   it("resolves the product's config root, honouring the explicit override", () => {

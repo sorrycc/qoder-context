@@ -133,6 +133,11 @@ export interface Overview {
   readonly sessionsTruncated: number
 }
 
+/** Like SessionResponse: pass `version` back to get `unchanged` while nothing it covers moved. */
+export type OverviewResponse =
+  | { readonly status: "ok"; readonly version: string; readonly overview: Overview }
+  | { readonly status: "unchanged"; readonly version: string }
+
 export function billed(tokens: TokenTotals): number {
   return tokens.prompt + tokens.output
 }

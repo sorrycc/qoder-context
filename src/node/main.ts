@@ -2,9 +2,10 @@ import type { Activate, PluginNodeJsonValue } from "@qoder/plugin-api"
 import { join } from "node:path"
 import { formatTokens } from "../shared/format.js"
 import { SERVICE_NAME, type Range, type SessionSummary } from "../shared/types.js"
+import { FoldCache } from "./folds.js"
 import { OverviewIndex } from "./overview.js"
 import { SessionDetails } from "./session.js"
-import { describe, foldTranscript, isSessionId, resolveProjectsRoot, TranscriptLocator } from "./transcripts.js"
+import { describe, isSessionId, resolveProjectsRoot, TranscriptLocator } from "./transcripts.js"
 
 const RANGES: readonly Range[] = ["today", "7d", "30d"]
 
@@ -17,14 +18,15 @@ export const activate: Activate = (context) => {
       event,
       data: { error: error instanceof Error ? error.name : "unknown" },
     })
-  const index = new OverviewIndex(locator, join(context.storagePath, "overview-cache.json"), report)
-  const details = new SessionDetails(locator)
+  const folds = new FoldCache()
+  const index = new OverviewIndex(locator, join(context.storagePath, "overview-cache.json"), report, folds)
+  const details = new SessionDetails(locator, folds)
 
   const summaryFor = async (sessionId: string): Promise<SessionSummary | null> => {
     const file = await locator.find(sessionId)
     const transcript = file ? await describe(file, sessionId) : null
     if (!transcript) return null
-    return index.cached(transcript.file, transcript.version) ?? (await foldTranscript(transcript.file, sessionId)).summary()
+    return index.cached(transcript.file, transcript.version) ?? (await folds.use(transcript, (fold) => fold.summary()))
   }
 
   context.subscriptions.push(
@@ -33,7 +35,7 @@ export const activate: Activate = (context) => {
       methods: {
         overview: async (input) => {
           const range = RANGES.find((candidate) => candidate === input.range) ?? "7d"
-          return json(await index.overview(range))
+          return json(await index.load(range, input.version))
         },
         session: async (input, serviceContext) =>
           json(await details.load(serviceContext.sessionResource?.sessionId ?? input.sessionId, input.version)),

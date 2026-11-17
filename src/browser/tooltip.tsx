@@ -181,7 +181,7 @@ export function Tooltip({ tip, children }: { readonly tip: ChartTip; readonly ch
       data-open={open && place ? "true" : undefined}
       data-below={place?.below ? "true" : undefined}
       data-glide={place?.glide ? "true" : undefined}
-      style={place ? { left: place.left, top: place.top } : undefined}
+      style={place ? { translate: `${place.left}px ${place.top}px` } : undefined}
     >
       {anchor ? children : null}
     </div>

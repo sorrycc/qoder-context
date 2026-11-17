@@ -37,7 +37,7 @@ export function labelEvery(slotPx: number, minPx: number): number {
   return [1, 2, 5, 10, 20, 25, 50, 100, 200, 500].find((step) => step >= needed) ?? 1000
 }
 
-export function WeekBars({ days, locale, t }: { readonly days: readonly DayBucket[]; readonly locale: string; readonly t: Translate }) {
+export const WeekBars = memo(function WeekBars({ days, locale, t }: { readonly days: readonly DayBucket[]; readonly locale: string; readonly t: Translate }) {
   const tip = useChartTip()
   const width = 320
   const height = 112
@@ -102,7 +102,7 @@ export function WeekBars({ days, locale, t }: { readonly days: readonly DayBucke
       </Tooltip>
     </div>
   )
-}
+})
 
 /** Sqrt-scaled fill opacity for a heatmap cell, 0 for an empty day. */
 export function heatLevel(tokens: number, max: number): number {
@@ -111,7 +111,7 @@ export function heatLevel(tokens: number, max: number): number {
 
 const HEAT_STEPS = [0, 0.25, 0.5, 0.75, 1] as const
 
-export function Heatmap({
+export const Heatmap = memo(function Heatmap({
   cells,
   selected,
   onSelect,
@@ -234,9 +234,9 @@ export function Heatmap({
       </Tooltip>
     </div>
   )
-}
+})
 
-export function Donut({
+export const Donut = memo(function Donut({
   parts,
   t,
 }: {
@@ -309,7 +309,7 @@ export function Donut({
       </div>
     </div>
   )
-}
+})
 
 /**
  * Dash pattern and offset for consecutive ring arcs, `values` sized against `scale` (anything past a
@@ -492,10 +492,13 @@ export function RequestTrend({
   }, [events, offset, requests.length])
   const every = labelEvery(pitch, 28)
 
+  // The plot grows in as one group on mount (one animation instead of hundreds); requests that
+  // arrive later grow in on their own.
+  const mountedEnd = useRef(offset + requests.length)
   const bars = useMemo(
     () =>
       requests.map((request, index) => (
-        <g key={offset + index} className="qc-grow-y" data-qc-tip={index}>
+        <g key={offset + index} className={offset + index >= mountedEnd.current ? "qc-grow-y" : undefined} data-qc-tip={index}>
           {stackRects(request, index * pitch, bar, geometry.y)}
         </g>
       )),
@@ -565,9 +568,16 @@ export function RequestTrend({
           ))}
           <line className="qc-axis" x1={0} x2={width} y1={height + 0.5} y2={height + 0.5} />
           {tip.active !== null ? (
-            <rect className="qc-band qc-trend-band" x={tip.active * pitch - gap} y={-top + 4} width={bar + gap * 2} height={height + top - 4} rx={2} />
+            <rect
+              className="qc-band qc-trend-band"
+              style={{ translate: `${tip.active * pitch - gap}px 0` }}
+              y={-top + 4}
+              width={bar + gap * 2}
+              height={height + top - 4}
+              rx={2}
+            />
           ) : null}
-          <g className="qc-bars" data-dim={active ? "true" : undefined}>
+          <g className="qc-bars qc-grow-y" data-dim={active ? "true" : undefined}>
             {bars}
           </g>
           {active && tip.active !== null ? <g className="qc-bars-active">{stackRects(active, tip.active * pitch, bar, geometry.y)}</g> : null}

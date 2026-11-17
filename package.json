@@ -11,7 +11,8 @@
     "test": "vitest run --passWithNoTests",
     "link-dev": "node scripts/linkDev.mjs",
     "unlink-dev": "node scripts/linkDev.mjs --remove",
-    "check": "npm run typecheck && npm test && npm run build"
+    "check": "npm run typecheck && npm test && npm run build",
+    "bench": "npm run build && node scripts/bench.mjs"
   },
   "peerDependencies": {
     "react": ">=18",

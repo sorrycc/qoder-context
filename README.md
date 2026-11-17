@@ -57,6 +57,19 @@ Limits worth knowing:
 - Overview data is cached in the plugin's `storagePath` (`overview-cache.json`), keyed by each
   transcript's size and mtime; only transcripts touched in the last 8 weeks are scanned.
 
+## Performance
+
+- Transcripts are append-only, so the folds of the most recently read ones (shared by the overview
+  and the session view) remember how far each file was read; a grown transcript only reads its new
+  bytes. A file that shrank or was rewritten is folded again from the start.
+- Files are read in 256 KB chunks, so a large history never holds the host's event loop for long.
+- A project folder's listing is reused while its mtime is unchanged, so a refresh costs a stat per
+  folder and transcript rather than a readdir per folder.
+- Both services answer `unchanged` for the version the view already holds; the view then keeps its
+  data objects and nothing re-renders.
+- `npm run bench` measures the scan, polls, payloads and bundle sizes against your own transcripts
+  (`node scripts/bench.mjs --root <projects dir> --runs 5` to point it elsewhere).
+
 ## Build
 
 ```sh

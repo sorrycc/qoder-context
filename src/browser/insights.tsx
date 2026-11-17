@@ -2,7 +2,7 @@ import { Button } from "@qoder-space/design-system"
 import type { PluginViewContext } from "@qoder/plugin-api/view"
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { formatPercent, formatTokens, shortPath } from "../shared/format.js"
-import { SERVICE_NAME, type Overview, type Range, type SessionCard, type Tally } from "../shared/types.js"
+import { SERVICE_NAME, type Overview, type OverviewResponse, type Range, type SessionCard, type Tally } from "../shared/types.js"
 import { Donut, Heatmap, longDate, MiniStack, SERIES, WeekBars } from "./charts.js"
 import { registerView, useLoad } from "./host.js"
 import { relativeTime, type MessageKey, type Translate } from "./i18n.js"
@@ -42,9 +42,20 @@ registerView((context, t) => <Insights context={context} t={t} />)
 
 function Insights({ context, t }: { readonly context: PluginViewContext; readonly t: Translate }) {
   const [range, setRange] = useState<Range>("7d")
+  // Refreshes send the version they hold and get "unchanged" back while no transcript moved, so
+  // the view keeps the same overview object and nothing below re-renders.
+  const last = useRef<Extract<OverviewResponse, { status: "ok" }> | null>(null)
   const overview = useLoad(
     context,
-    async () => (await context.api.node.callService(SERVICE_NAME, "overview", { range }, { timeoutMs: 60_000 })) as unknown as Overview,
+    async () => {
+      const call = (version?: string) =>
+        context.api.node.callService(SERVICE_NAME, "overview", { range, ...(version ? { version } : {}) }, { timeoutMs: 60_000 }) as unknown as Promise<OverviewResponse>
+      let result = await call(last.current?.version)
+      if (result.status === "unchanged") result = last.current?.version === result.version ? last.current : await call()
+      if (result.status === "unchanged") throw new Error("unexpected unchanged response")
+      last.current = result
+      return result.overview
+    },
     range,
   )
   const data = overview.data
@@ -106,7 +117,8 @@ function Placeholder() {
   )
 }
 
-function Dashboard({ context, data, t }: { readonly context: PluginViewContext; readonly data: Overview; readonly t: Translate }) {
+// Memoized, with stable props below it, so typing in search or hovering a tile re-renders only what changed.
+const Dashboard = memo(function Dashboard({ context, data, t }: { readonly context: PluginViewContext; readonly data: Overview; readonly t: Translate }) {
   const [day, setDay] = useState<string | null>(null)
   const [tally, setTally] = useState<Filter["tally"]>(null)
   const [search, setSearch] = useState("")
@@ -134,7 +146,16 @@ function Dashboard({ context, data, t }: { readonly context: PluginViewContext; 
     setSearch("")
   }
   const sortOptions = useMemo(() => (Object.keys(SORT_LABELS) as Sort[]).map((value) => ({ value, label: t(SORT_LABELS[value]) })), [t])
-  const tallyProps = { filter, usage, onToggle: toggleTally, t }
+  const parts = useMemo(
+    () => [
+      { label: t("cacheRead"), value: data.composition.cacheRead, color: SERIES.cacheRead },
+      { label: t("uncached"), value: data.composition.uncached, color: SERIES.uncached },
+      { label: t("output"), value: data.composition.output, color: SERIES.output },
+    ],
+    [data.composition, t],
+  )
+  const tallyProps = { usage, onToggle: toggleTally, t }
+  const selectedOf = (kind: TallyKind) => (tally?.kind === kind ? tally.name : null)
 
   return (
     <>
@@ -156,22 +177,27 @@ function Dashboard({ context, data, t }: { readonly context: PluginViewContext; 
       </div>
       <div className="qc-grid qc-four">
         <Card index={8} title={t("compositionTitle")}>
-          <Donut
-            t={t}
-            parts={[
-              { label: t("cacheRead"), value: data.composition.cacheRead, color: SERIES.cacheRead },
-              { label: t("uncached"), value: data.composition.uncached, color: SERIES.uncached },
-              { label: t("output"), value: data.composition.output, color: SERIES.output },
-            ]}
-          />
+          <Donut t={t} parts={parts} />
         </Card>
-        <TallyCard index={9} title={t("toolsTitle")} kind="tools" tallies={data.tools} empty={{ icon: "tool", title: t("emptyTools") }} {...tallyProps} />
+        <TallyCard
+          index={9}
+          title={t("toolsTitle")}
+          kind="tools"
+          tallies={data.tools}
+          selected={selectedOf("tools")}
+          emptyIcon="tool"
+          emptyTitle={t("emptyTools")}
+          {...tallyProps}
+        />
         <TallyCard
           index={10}
           title={t("skillsTitle")}
           kind="skills"
           tallies={data.skills}
-          empty={{ icon: "sparkle", title: t("emptySkills"), hint: t("emptySkillsHint") }}
+          selected={selectedOf("skills")}
+          emptyIcon="sparkle"
+          emptyTitle={t("emptySkills")}
+          emptyHint={t("emptySkillsHint")}
           {...tallyProps}
         />
         <TallyCard
@@ -179,7 +205,9 @@ function Dashboard({ context, data, t }: { readonly context: PluginViewContext; 
           title={t("commandsTitle")}
           kind="commands"
           tallies={data.commands}
-          empty={{ icon: "terminal", title: t("emptyCommands") }}
+          selected={selectedOf("commands")}
+          emptyIcon="terminal"
+          emptyTitle={t("emptyCommands")}
           {...tallyProps}
         />
       </div>
@@ -236,7 +264,7 @@ function Dashboard({ context, data, t }: { readonly context: PluginViewContext; 
       </Card>
     </>
   )
-}
+})
 
 const formatTokenValue = (value: number | null) => formatTokens(value ?? 0)
 const formatRatio = (value: number | null) => formatPercent(value)
@@ -290,13 +318,15 @@ function SearchField({ value, onChange, t }: { readonly value: string; readonly 
   )
 }
 
-function TallyCard({
+const TallyCard = memo(function TallyCard({
   index,
   title,
   kind,
   tallies,
-  empty,
-  filter,
+  selected: selectedName,
+  emptyIcon,
+  emptyTitle,
+  emptyHint,
   usage,
   onToggle,
   t,
@@ -305,8 +335,11 @@ function TallyCard({
   readonly title: string
   readonly kind: TallyKind
   readonly tallies: readonly Tally[]
-  readonly empty: { readonly icon: IconName; readonly title: string; readonly hint?: string }
-  readonly filter: Filter
+  /** The name this card's filter is set to, if any. */
+  readonly selected: string | null
+  readonly emptyIcon: IconName
+  readonly emptyTitle: string
+  readonly emptyHint?: string
   readonly usage: ReadonlyMap<string, number>
   readonly onToggle: (kind: TallyKind, name: string) => void
   readonly t: Translate
@@ -314,7 +347,7 @@ function TallyCard({
   const tip = useChartTip()
   const hover = useHoverTip(tip, 120)
   const max = Math.max(1, ...tallies.map((tally) => tally.count))
-  const selected = filter.tally?.kind === kind ? tallies.findIndex((tally) => tally.name === filter.tally?.name) : -1
+  const selected = selectedName === null ? -1 : tallies.findIndex((tally) => tally.name === selectedName)
   const active = tip.active === null ? undefined : tallies[tip.active]
   const row = (tally: Tally, position: number) => {
     const pressed = position === selected
@@ -333,7 +366,7 @@ function TallyCard({
   return (
     <Card index={index} title={title} hint={tallies.length > 0 ? tallies.length : undefined}>
       {tallies.length === 0 ? (
-        <EmptyState compact icon={empty.icon} title={empty.title} hint={empty.hint} />
+        <EmptyState compact icon={emptyIcon} title={emptyTitle} hint={emptyHint} />
       ) : (
         <div className="qc-tip-host" ref={tip.hostRef} {...hover}>
           <CappedList
@@ -363,7 +396,7 @@ function TallyCard({
       )}
     </Card>
   )
-}
+})
 
 function SessionList({
   sessions,

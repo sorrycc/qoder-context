@@ -1,8 +1,9 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
-import { DAY_MS, lastDays, rangeDays } from "../shared/days.js"
-import type { DayBucket, Overview, Range, SessionCard, SessionSummary, Tally } from "../shared/types.js"
-import { foldTranscript, mapLimit, type TranscriptLocator } from "./transcripts.js"
+import { DAY_MS, lastDays, localDay, rangeDays } from "../shared/days.js"
+import type { DayBucket, Overview, OverviewResponse, Range, SessionCard, SessionSummary, Tally } from "../shared/types.js"
+import { FoldCache } from "./folds.js"
+import { mapLimit, type TranscriptLocator } from "./transcripts.js"
 
 export const HEATMAP_DAYS = 56
 const CACHE_VERSION = 4
@@ -16,24 +17,45 @@ interface CacheEntry {
   readonly summary: SessionSummary
 }
 
+interface Scan {
+  readonly summaries: SessionSummary[]
+  readonly scanned: number
+  /** Changes whenever any scanned transcript does. */
+  readonly signature: string
+}
+
 /**
  * Keeps one folded summary per transcript, keyed by file and its size/mtime version, so
- * a refresh only re-reads the transcripts that changed since the last scan.
+ * a refresh only re-reads the transcripts that changed since the last scan, and only their
+ * appended part while their fold is still in the shared FoldCache.
  */
 export class OverviewIndex {
   private readonly entries = new Map<string, CacheEntry>()
   private loaded: Promise<void> | null = null
-  private scanning: Promise<{ summaries: SessionSummary[]; scanned: number }> | null = null
+  private scanning: Promise<Scan> | null = null
 
   constructor(
     private readonly locator: TranscriptLocator,
     private readonly cacheFile: string,
     private readonly onError: (event: string, error: unknown) => void = () => undefined,
+    private readonly folds = new FoldCache(),
   ) {}
 
   async overview(range: Range, now = Date.now()): Promise<Overview> {
     const { summaries, scanned } = await this.scan(now)
     return aggregate(summaries, range, now, scanned)
+  }
+
+  /**
+   * The overview for `range`, or `unchanged` when the caller already holds `known`: the same range
+   * on the same local day over the same transcript versions, so the view keeps its objects and skips
+   * the transfer and the re-render.
+   */
+  async load(range: Range, known?: unknown, now = Date.now()): Promise<OverviewResponse> {
+    const { summaries, scanned, signature } = await this.scan(now)
+    const version = `${range}:${localDay(now)}:${signature}`
+    if (known === version) return { status: "unchanged", version }
+    return { status: "ok", version, overview: aggregate(summaries, range, now, scanned) }
   }
 
   /** Cached summary for one session when the transcript has not changed since the last scan. */
@@ -49,8 +71,8 @@ export class OverviewIndex {
     return this.scanning
   }
 
-  private async runScan(now: number) {
-    this.loaded ??= this.load()
+  private async runScan(now: number): Promise<Scan> {
+    this.loaded ??= this.restore()
     await this.loaded
     const files = await this.locator.list(now - HEATMAP_DAYS * DAY_MS)
     let changed = false
@@ -64,7 +86,7 @@ export class OverviewIndex {
         return
       }
       try {
-        const summary = (await foldTranscript(transcript.file, transcript.id)).summary()
+        const summary = await this.folds.use(transcript, (fold) => fold.summary())
         this.entries.set(transcript.file, { version: transcript.version, summary })
         summaries.push(summary)
         changed = true
@@ -79,10 +101,11 @@ export class OverviewIndex {
       }
     }
     if (changed) await this.persist()
-    return { summaries, scanned: files.length }
+    const versions = files.map((file) => `${file.file}\0${file.version}`).sort()
+    return { summaries, scanned: files.length, signature: `${files.length}.${hash(versions.join("\n"))}` }
   }
 
-  private async load(): Promise<void> {
+  private async restore(): Promise<void> {
     try {
       const parsed = JSON.parse(await readFile(this.cacheFile, "utf8")) as {
         version?: number
@@ -170,6 +193,20 @@ export function aggregate(summaries: readonly SessionSummary[], range: Range, no
     sessions: cards.slice(0, SESSION_CARD_LIMIT),
     sessionsTruncated: Math.max(0, cards.length - SESSION_CARD_LIMIT),
   }
+}
+
+/** cyrb53: a fast 53-bit string hash, enough to tell scans apart. */
+export function hash(text: string): string {
+  let h1 = 0xdeadbeef
+  let h2 = 0x41c6ce57
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index)
+    h1 = Math.imul(h1 ^ code, 2654435761)
+    h2 = Math.imul(h2 ^ code, 1597334677)
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)
 }
 
 function toCard(summary: SessionSummary): SessionCard {

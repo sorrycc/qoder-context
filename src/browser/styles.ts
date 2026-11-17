@@ -20,7 +20,9 @@
  *           Classes: .qc-enter (fade + rise on mount, stagger with --qc-i), .qc-grow-y (SVG bars
  *           grow from their base), .qc-fill-in (meters sweep in from the left), .qc-pressable
  *           (hover lift + press). Numbers ease via AnimatedNumber/useTweenedNumber (motion.ts).
- *           All motion is dropped under prefers-reduced-motion, except the busy spinner.
+ *           Animate transform and opacity only (the tooltip glides with \`translate\`), so motion
+ *           stays on the compositor. All motion is dropped under prefers-reduced-motion, except
+ *           the busy spinner. Session tiles use content-visibility, so offscreen ones skip rendering.
  * Layout    .qc-grid + .qc-kpis / .qc-two / .qc-four; components in ui.tsx (Card, SectionHeader,
  *           Kpi, Skeleton, Spinner, Segmented, Collapse, CappedList, EmptyState, Icon). The session
  *           view adds .qc-pairs (at most two columns), .qc-hero (ContextRing card + KPIs),
@@ -184,7 +186,7 @@ export const STYLES = `
 .qc-grid-line { stroke: var(--qc-border); stroke-dasharray: 2 3; }
 .qc-band { fill: var(--qc-fill-2); opacity: 0; transition: opacity var(--qc-dur-fast) var(--qc-ease-out); }
 g[data-active] > .qc-band, .qc-trend-band { opacity: 1; }
-.qc-trend-band { fill: var(--qc-fill-3); transition: x var(--qc-dur-fast) var(--qc-ease-out); }
+.qc-trend-band { fill: var(--qc-fill-3); transition: translate var(--qc-dur-fast) var(--qc-ease-out); }
 .qc-bar { transition: fill-opacity var(--qc-dur-base) var(--qc-ease-out); }
 .qc-chart:has(g[data-active]) .qc-bar { fill-opacity: 0.45; }
 .qc-chart g[data-active] .qc-bar { fill-opacity: 1; }
@@ -247,7 +249,7 @@ g[data-active] > .qc-band, .qc-trend-band { opacity: 1; }
 .qc-tip { position: absolute; left: 0; top: 0; z-index: 10; pointer-events: none; min-width: 150px; max-width: 300px; padding: var(--qc-space-2) 10px; border-radius: var(--qc-radius-md); background: var(--qc-raised); border: 1px solid var(--qc-border-strong); box-shadow: var(--qc-shadow-2); color: var(--qc-text); font-size: var(--qc-font-sm); line-height: 1.45; visibility: hidden; opacity: 0; transform: translateY(4px) scale(0.97); transform-origin: 50% 100%; transition: opacity var(--qc-dur-fast) var(--qc-ease-out), transform var(--qc-dur-base) var(--qc-ease-out), visibility 0s linear var(--qc-dur-fast); }
 .qc-tip[data-below] { transform-origin: 50% 0; transform: translateY(-4px) scale(0.97); }
 .qc-tip[data-open] { visibility: visible; opacity: 1; transform: none; transition-delay: 0s; }
-.qc-tip[data-open][data-glide] { transition: opacity var(--qc-dur-fast) var(--qc-ease-out), transform var(--qc-dur-base) var(--qc-ease-out), left var(--qc-dur-base) var(--qc-ease-out), top var(--qc-dur-base) var(--qc-ease-out); }
+.qc-tip[data-open][data-glide] { transition: opacity var(--qc-dur-fast) var(--qc-ease-out), transform var(--qc-dur-base) var(--qc-ease-out), translate var(--qc-dur-base) var(--qc-ease-out); }
 .qc-root[data-qc-scheme="dark"] .qc-tip { box-shadow: 0 10px 28px -8px rgb(0 0 0 / 0.6); }
 .qc-tip-title { font-weight: var(--qc-weight-bold); margin-bottom: var(--qc-space-1); white-space: nowrap; }
 .qc-tip-rows { margin: 0; display: grid; gap: 2px; }
@@ -304,7 +306,7 @@ g[data-active] > .qc-band, .qc-trend-band { opacity: 1; }
 .qc-group-title { font-weight: var(--qc-weight-bold); color: var(--qc-text); }
 .qc-group-tokens { margin-left: auto; color: var(--qc-text-3); font-variant-numeric: tabular-nums; }
 .qc-sessions { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 10px; }
-.qc-session { border: 1px solid var(--qc-border); border-radius: var(--qc-radius-md); padding: 10px var(--qc-space-3); background: var(--qc-raised); text-align: left; font: inherit; color: inherit; cursor: pointer; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.qc-session { border: 1px solid var(--qc-border); border-radius: var(--qc-radius-md); padding: 10px var(--qc-space-3); background: var(--qc-raised); text-align: left; font: inherit; color: inherit; cursor: pointer; min-width: 0; display: flex; flex-direction: column; gap: 6px; content-visibility: auto; contain-intrinsic-size: auto 92px; }
 .qc-session-title { font-weight: var(--qc-weight-bold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qc-session-path { color: var(--qc-text-3); font-size: var(--qc-font-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qc-session-meta [data-tone="warning"] { color: var(--qc-warning); }
@@ -414,7 +416,7 @@ g[data-active] > .qc-band, .qc-trend-band { opacity: 1; }
 .qc-enter { animation: qc-enter var(--qc-dur-slow) var(--qc-ease-out) backwards; animation-delay: calc(var(--qc-i, 0) * 35ms); }
 .qc-grow-y { transform-box: fill-box; transform-origin: 50% 100%; animation: qc-grow-y var(--qc-dur-slow) var(--qc-ease-out) backwards; animation-delay: calc(var(--qc-i, 0) * 30ms); }
 .qc-fade { animation: qc-fade var(--qc-dur-slow) var(--qc-ease-out) backwards; animation-delay: calc(var(--qc-i, 0) * 30ms); }
-.qc-fill-in { animation: qc-fill-in var(--qc-dur-slow) var(--qc-ease-out) backwards; }
+.qc-fill-in { transform-origin: left; animation: qc-fill-in var(--qc-dur-slow) var(--qc-ease-out) backwards; }
 .qc-tally-bar > span { animation: qc-grow-x var(--qc-dur-slow) var(--qc-ease-out) backwards; animation-delay: calc(var(--qc-i, 0) * 30ms); }
 .qc-donut > svg { animation: qc-spin-in var(--qc-dur-slow) var(--qc-ease-out) backwards; }
 .qc-pressable { transition: transform var(--qc-dur-fast) var(--qc-ease-out), box-shadow var(--qc-dur-base) var(--qc-ease-out), border-color var(--qc-dur-base) var(--qc-ease-out), background-color var(--qc-dur-base) var(--qc-ease-out); }
@@ -442,7 +444,7 @@ g[data-active] > .qc-band, .qc-trend-band { opacity: 1; }
 @keyframes qc-pop { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: none; } }
 @keyframes qc-grow-y { from { transform: scaleY(0); } to { transform: none; } }
 @keyframes qc-grow-x { from { transform: scaleX(0); } to { transform: none; } }
-@keyframes qc-fill-in { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
+@keyframes qc-fill-in { from { transform: scaleX(0); } to { transform: none; } }
 @keyframes qc-spin-in { from { opacity: 0; transform: rotate(-60deg) scale(0.9); } to { opacity: 1; transform: none; } }
 @keyframes qc-shimmer { to { transform: translateX(100%); } }
 @keyframes qc-spin { to { transform: rotate(360deg); } }

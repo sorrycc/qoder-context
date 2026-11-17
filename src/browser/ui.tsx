@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react"
+import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react"
 import { enter, useTweenedNumber } from "./motion.js"
 
 export type Tone = "neutral" | "accent" | "success" | "warning" | "danger"
@@ -45,7 +45,7 @@ export function Card({
   )
 }
 
-export function Kpi({
+export const Kpi = memo(function Kpi({
   label,
   value,
   format,
@@ -69,7 +69,7 @@ export function Kpi({
       {sub ? <div className="qc-kpi-sub">{sub}</div> : null}
     </div>
   )
-}
+})
 
 export function Skeleton({ height, width, radius }: { readonly height: number; readonly width?: number | string; readonly radius?: string }) {
   return <div className="qc-skeleton" style={{ height, width, borderRadius: radius }} aria-hidden="true" />
