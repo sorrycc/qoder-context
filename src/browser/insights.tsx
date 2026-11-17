@@ -13,8 +13,8 @@ globalThis.qoderPluginView.register({
 function Insights({ context }: { readonly context: PluginViewContext }) {
   const [status, setStatus] = useState("…")
   useEffect(() => {
-    context.api.node.callService("context", "ping").then(
-      (reply) => setStatus(JSON.stringify(reply)),
+    context.api.node.callService("context", "overview", { range: "7d" }).then(
+      (reply) => setStatus(JSON.stringify((reply as { kpi?: unknown }).kpi ?? null)),
       () => setStatus("node service unavailable"),
     )
   }, [context])
