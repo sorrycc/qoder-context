@@ -6,8 +6,8 @@
     "qoder": ">=0.5.0"
   },
   "main": "dist/node/main.cjs",
-  "activationEvents": ["onView:insights"],
-  "permissions": ["node.callService", "chat.revealLocalSession"],
+  "activationEvents": ["onStartup", "onView:insights", "onView:session-context"],
+  "permissions": ["node.callService", "session.provideResources", "chat.revealLocalSession"],
   "contributes": {
     "views": [
       {
@@ -18,6 +18,15 @@
         },
         "location": "workbench",
         "entry": "dist/browser/insights.cjs"
+      },
+      {
+        "id": "session-context",
+        "title": {
+          "default": "Context",
+          "translations": { "zh-CN": "上下文" }
+        },
+        "location": "session.resource",
+        "entry": "dist/browser/session.cjs"
       }
     ],
     "sidebarNavItems": [
@@ -30,6 +39,29 @@
         "icon": "assets/context.svg",
         "viewId": "insights",
         "slot": "workbench.sidebar.secondary"
+      }
+    ],
+    "sessionResources": [
+      {
+        "id": "context",
+        "title": {
+          "default": "Context",
+          "translations": { "zh-CN": "上下文" }
+        },
+        "previewViewId": "session-context",
+        "taskMonitorSection": {
+          "settings": {
+            "group": "progress",
+            "title": {
+              "default": "Context usage",
+              "translations": { "zh-CN": "上下文用量" }
+            },
+            "description": {
+              "default": "Show token usage, context growth and compactions for this conversation.",
+              "translations": { "zh-CN": "显示当前会话的 Token 用量、上下文增长与压缩记录。" }
+            }
+          }
+        }
       }
     ]
   }

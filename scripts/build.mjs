@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url"
 import { build } from "esbuild"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
-const views = ["insights"]
+const views = ["insights", "session"]
 const hostModules = [
   "@qoder-space/design-system",
   "react",
