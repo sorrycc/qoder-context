@@ -127,6 +127,14 @@ describe("SessionFold", () => {
 })
 
 describe("commandPrograms", () => {
+  it("ignores script text inside heredocs and quoted strings", () => {
+    expect(commandPrograms("cat > a.ts <<'EOF'\nconst x = 1\nEOF\nnode -e 'const y = 2\nconsole.log(y)' | grep \"a|b\"")).toEqual([
+      "cat",
+      "node",
+      "grep",
+    ])
+  })
+
   it("skips shell keywords so loops don't show up as programs", () => {
     expect(commandPrograms("for f in *.md; do wc -l $f; done")).toEqual(["wc"])
   })

@@ -141,7 +141,7 @@ export function Donut({
         {parts.map((part) => (
           <li key={part.label}>
             <i className="qc-swatch" style={{ background: part.color }} />
-            <span className="qc-name">{part.label}</span>
+            <span>{part.label}</span>
             <span className="qc-count">
               {formatTokens(part.value)} · {formatPercent(total > 0 ? part.value / total : null, 0)}
             </span>

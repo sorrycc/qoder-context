@@ -5,7 +5,7 @@ import type { DayBucket, Overview, Range, SessionCard, SessionSummary, Tally } f
 import { foldTranscript, mapLimit, type TranscriptLocator } from "./transcripts.js"
 
 export const HEATMAP_DAYS = 56
-const CACHE_VERSION = 3
+const CACHE_VERSION = 4
 const CACHE_ENTRY_LIMIT = 3_000
 const SESSION_CARD_LIMIT = 300
 const TALLY_LIMIT = 12

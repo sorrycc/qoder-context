@@ -321,7 +321,7 @@ export class SessionFold {
 /** Distinct program names a shell command line runs, e.g. `cd x && npm test | tee` → npm, tee. */
 export function commandPrograms(command: string): string[] {
   const programs = new Set<string>()
-  for (const segment of command.split(/&&|\|\||[;|\n]/)) {
+  for (const segment of stripLiterals(command).split(/&&|\|\||[;|\n]/)) {
     const tokens = segment
       .trim()
       .replace(/^[({\s!]+/, "")
@@ -335,6 +335,13 @@ export function commandPrograms(command: string): string[] {
     if (/^[A-Za-z0-9][\w.+-]*$/.test(program) && !SHELL_KEYWORDS.has(program)) programs.add(program)
   }
   return [...programs]
+}
+
+/** Drops heredoc bodies and quoted strings so script text inside them isn't read as commands. */
+function stripLiterals(command: string): string {
+  return command
+    .replace(/<<-?\s*(['"]?)(\w+)\1([^\n]*)\n[\s\S]*?\n\s*\2\s*(?=\n|$)/g, "$3")
+    .replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, "''")
 }
 
 function isRecord(value: unknown): value is Json {
