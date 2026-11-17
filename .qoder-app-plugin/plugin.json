@@ -7,7 +7,7 @@
   },
   "main": "dist/node/main.cjs",
   "activationEvents": ["onView:insights"],
-  "permissions": ["node.callService"],
+  "permissions": ["node.callService", "chat.revealLocalSession"],
   "contributes": {
     "views": [
       {
