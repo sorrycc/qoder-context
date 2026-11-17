@@ -15,19 +15,24 @@ const hostModules = [
 
 const browserTarget = "chrome142"
 
-/** Ships styles.ts's STYLES template minified; esbuild's JS minifier leaves template text alone. */
-const minifyStyles = {
+/**
+ * Ships styles.ts's STYLES template minified, without the rules marked for the other view;
+ * esbuild's JS minifier leaves template text alone.
+ */
+const minifyStyles = (view) => ({
   name: "minify-styles",
   setup(builder) {
     builder.onLoad({ filter: /[\\/]src[\\/]browser[\\/]styles\.ts$/ }, async ({ path }) => {
       const source = await readFile(path, "utf8")
       const match = /export const STYLES = `([^`]*)`/.exec(source)
       if (!match || match[1].includes("${")) throw new Error("styles.ts: expected one plain STYLES template literal")
-      const { code } = await transform(match[1], { loader: "css", minify: true, target: browserTarget })
+      const css = match[1].replace(/\/\* @view (\w+) \*\/([\s\S]*?)\/\* @end \*\//g, (_, only, rules) => (only === view ? rules : ""))
+      if (css.includes("@view") || css.includes("@end")) throw new Error("styles.ts: unbalanced @view / @end markers")
+      const { code } = await transform(css, { loader: "css", minify: true, target: browserTarget })
       return { contents: `export const STYLES = ${JSON.stringify(code.trim())}`, loader: "ts" }
     })
   },
-}
+})
 
 await rm(join(root, "dist"), { recursive: true, force: true })
 
@@ -53,7 +58,7 @@ await Promise.all([
       legalComments: "none",
       minify: true,
       external: hostModules,
-      plugins: [minifyStyles],
+      plugins: [minifyStyles(name)],
     }),
   ),
 ])

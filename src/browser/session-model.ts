@@ -1,4 +1,4 @@
-import type { CommandRun, ContextEvent, RequestPoint, SessionDetail, TimingStats } from "../shared/types.js"
+import type { CommandRun, ContextEvent, FileActivity, RequestPoint, SessionDetail, TimingStats } from "../shared/types.js"
 import { searchTerms } from "./lists.js"
 
 /** Requests looked back over to estimate how fast the context grows. */
@@ -69,6 +69,45 @@ export function timeline(events: readonly ContextEvent[]): TimelineItem[] {
     items.push({ key: `${event.kind}-${event.at}-${items.length}`, event, count: 1, firstAt: event.at })
   }
   return items.reverse()
+}
+
+export type EventFilter = "all" | ContextEvent["kind"]
+
+/** Events per kind, for filter chips; `all` counts every event. */
+export function eventCounts(events: readonly ContextEvent[]): Readonly<Record<EventFilter, number>> {
+  const counts = { all: events.length, compaction: 0, retry: 0, error: 0 }
+  for (const event of events) counts[event.kind] += 1
+  return counts
+}
+
+export type FileFilter = "all" | "edited" | "read"
+
+const FILE_FILTERS: Record<FileFilter, (file: FileActivity) => boolean> = {
+  all: () => true,
+  edited: (file) => file.writes > 0,
+  read: (file) => file.writes === 0,
+}
+
+export interface FileFacts {
+  readonly counts: Readonly<Record<FileFilter, number>>
+  readonly added: number
+  readonly removed: number
+}
+
+export function fileFacts(files: readonly FileActivity[]): FileFacts {
+  let edited = 0
+  let added = 0
+  let removed = 0
+  for (const file of files) {
+    if (file.writes > 0) edited += 1
+    added += file.added
+    removed += file.removed
+  }
+  return { counts: { all: files.length, edited, read: files.length - edited }, added, removed }
+}
+
+export function visibleFiles(files: readonly FileActivity[], filter: FileFilter): readonly FileActivity[] {
+  return filter === "all" ? files : files.filter(FILE_FILTERS[filter])
 }
 
 /** A path's last segment and the one or two directories above it, for compact file rows. */

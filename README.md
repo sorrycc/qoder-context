@@ -4,9 +4,12 @@ A Qoder Desktop App Plugin for context and token insight, in the spirit of
 [dsh-context](https://github.com/bowenliang123/dsh-context) for DeepSeek Harness.
 
 - **Context Insights** (sidebar, `workbench.sidebar.secondary`): KPIs for the picked range
-  (sessions, billed tokens, cache-hit rate, turns, requests, tool runs), a 7-day usage chart, an
-  8-week activity heatmap, the token composition, tool/skill/command tallies, and searchable session
-  cards that open the session in Qoder. Clicking a heatmap day or a tally filters the cards.
+  (sessions, billed tokens, cache-hit rate, turns, requests, tool runs, active time and the share of
+  finished shell commands that failed), a 7-day usage chart, an 8-week activity heatmap, a
+  **Workspaces** breakdown of tokens, sessions and active time per project folder, the token
+  composition, tool/skill/command tallies, and searchable session cards (with a context-fill ring)
+  that open the session in Qoder, grouped by date or by folder. Clicking a heatmap day, a folder or a
+  tally filters the cards.
 - **Context** (per conversation, in the Task Monitor's "Context" section): a context ring against
   the model window with headroom, cached/uncached split and an estimate of how many requests still fit
   at the recent growth rate; turn/request/token/cache stats; a per-request trend with compaction
@@ -14,7 +17,8 @@ A Qoder Desktop App Plugin for context and token insight, in the spirit of
   clicking a bar, a ✂ marker, a context event or a command's `#n` pins that request and shows its
   details; a **Timing** card splitting active time into model, tool and compaction time with a time
   ribbon and an output rate; a timeline of context events (compactions, retries, errors, repeats
-  folded); file activity split into reads and writes; tools; and **Command executions**: every shell
+  folded, filterable by kind); file activity with the lines edits added and removed, filterable into
+  edited and read-only files; tools; and **Command executions**: every shell
   run with its outcome (succeeded, failed with exit code, cancelled, backgrounded, running), wall time
   and request, filterable by All/Failed/Slow/Background, program and text, sorted by latest or
   slowest. Rows show details on hover or focus.
@@ -75,6 +79,10 @@ Limits worth knowing:
   folder and transcript rather than a readdir per folder.
 - Both services answer `unchanged` for the version the view already holds; the view then keeps its
   data objects and nothing re-renders.
+- Active time and shell outcomes are bucketed per day inside each cached session summary, so the
+  overview sums them per range without re-reading a transcript.
+- Each view's bundle ships only its own CSS (blocks marked `@view` in `styles.ts` are stripped from
+  the other view at build time).
 - `npm run bench` measures the scan, polls, payloads and bundle sizes against your own transcripts
   (`node scripts/bench.mjs --root <projects dir> --runs 5` to point it elsewhere).
 

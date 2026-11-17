@@ -1,12 +1,12 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { DAY_MS, lastDays, localDay, rangeDays } from "../shared/days.js"
-import type { DayBucket, Overview, OverviewResponse, Range, SessionCard, SessionSummary, Tally } from "../shared/types.js"
+import type { DayBucket, Overview, OverviewResponse, Range, SessionCard, SessionSummary, Tally, WorkspaceTally } from "../shared/types.js"
 import { FoldCache } from "./folds.js"
 import { mapLimit, type TranscriptLocator } from "./transcripts.js"
 
 export const HEATMAP_DAYS = 56
-const CACHE_VERSION = 4
+const CACHE_VERSION = 5
 const CACHE_ENTRY_LIMIT = 3_000
 const SESSION_CARD_LIMIT = 300
 const TALLY_LIMIT = 24
@@ -137,32 +137,37 @@ export function aggregate(summaries: readonly SessionSummary[], range: Range, no
   const inRange = new Set(lastDays(rangeDays(range), now))
   const weekDays = lastDays(7, now)
   const heatDays = lastDays(HEATMAP_DAYS, now)
-  const byDay = new Map<string, { tokens: number; requests: number; turns: number; toolRuns: number }>()
-  const kpi = { sessions: 0, tokens: 0, turns: 0, requests: 0, toolRuns: 0 }
+  const byDay = new Map<string, Omit<DayBucket, "day">>()
+  const kpi = { sessions: 0, tokens: 0, turns: 0, requests: 0, toolRuns: 0, activeMs: 0, shellRuns: 0, shellFailures: 0 }
   const composition = { cacheRead: 0, uncached: 0, output: 0 }
   const tools = new Map<string, { count: number; lastAt: number }>()
   const skills = new Map<string, { count: number; lastAt: number }>()
   const commands = new Map<string, { count: number; lastAt: number }>()
+  const workspaces = new Map<string, { sessions: number; tokens: number; activeMs: number; lastAt: number }>()
   const cards: SessionCard[] = []
   let prompt = 0
 
   for (const summary of summaries) {
-    for (const bucket of summary.days) {
-      const total = byDay.get(bucket.day) ?? { tokens: 0, requests: 0, turns: 0, toolRuns: 0 }
-      total.tokens += bucket.tokens
-      total.requests += bucket.requests
-      total.turns += bucket.turns
-      total.toolRuns += bucket.toolRuns
-      byDay.set(bucket.day, total)
-    }
+    for (const bucket of summary.days) byDay.set(bucket.day, addBucket(byDay.get(bucket.day) ?? emptyTotals(), bucket))
     const active = summary.days.filter((bucket) => inRange.has(bucket.day))
     if (active.length === 0) continue
     kpi.sessions += 1
-    for (const bucket of active) {
-      kpi.tokens += bucket.tokens
-      kpi.requests += bucket.requests
-      kpi.turns += bucket.turns
-      kpi.toolRuns += bucket.toolRuns
+    const own = emptyTotals()
+    for (const bucket of active) addBucket(own, bucket)
+    kpi.tokens += own.tokens
+    kpi.requests += own.requests
+    kpi.turns += own.turns
+    kpi.toolRuns += own.toolRuns
+    kpi.activeMs += own.activeMs
+    kpi.shellRuns += own.shellRuns
+    kpi.shellFailures += own.shellFailures
+    if (summary.cwd) {
+      const workspace = workspaces.get(summary.cwd) ?? { sessions: 0, tokens: 0, activeMs: 0, lastAt: 0 }
+      workspace.sessions += 1
+      workspace.tokens += own.tokens
+      workspace.activeMs += own.activeMs
+      workspace.lastAt = Math.max(workspace.lastAt, summary.lastAt)
+      workspaces.set(summary.cwd, workspace)
     }
     prompt += summary.tokens.prompt
     composition.cacheRead += summary.tokens.cacheRead
@@ -175,7 +180,6 @@ export function aggregate(summaries: readonly SessionSummary[], range: Range, no
   }
 
   cards.sort((a, b) => b.lastAt - a.lastAt)
-  const empty = (day: string): DayBucket => ({ day, tokens: 0, requests: 0, turns: 0, toolRuns: 0 })
   return {
     range,
     generatedAt: now,
@@ -183,13 +187,17 @@ export function aggregate(summaries: readonly SessionSummary[], range: Range, no
     kpi: { ...kpi, cacheHitRate: prompt > 0 ? composition.cacheRead / prompt : null },
     week: weekDays.map((day) => {
       const bucket = byDay.get(day)
-      return bucket ? { day, ...bucket } : empty(day)
+      return { day, ...(bucket ?? emptyTotals()) }
     }),
     heatmap: heatDays.map((day) => ({ day, tokens: byDay.get(day)?.tokens ?? 0, requests: byDay.get(day)?.requests ?? 0 })),
     composition,
     tools: topTallies(tools),
     skills: topTallies(skills),
     commands: topTallies(commands),
+    workspaces: [...workspaces]
+      .map(([path, entry]): WorkspaceTally => ({ path, ...entry }))
+      .sort((a, b) => b.tokens - a.tokens || b.lastAt - a.lastAt)
+      .slice(0, TALLY_LIMIT),
     sessions: cards.slice(0, SESSION_CARD_LIMIT),
     sessionsTruncated: Math.max(0, cards.length - SESSION_CARD_LIMIT),
   }
@@ -207,6 +215,16 @@ export function hash(text: string): string {
   h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)
+}
+
+function emptyTotals(): { -readonly [K in Exclude<keyof DayBucket, "day">]: number } {
+  return { tokens: 0, requests: 0, turns: 0, toolRuns: 0, activeMs: 0, shellRuns: 0, shellFailures: 0 }
+}
+
+/** Adds `bucket` into `total`. */
+function addBucket(total: ReturnType<typeof emptyTotals>, bucket: DayBucket): ReturnType<typeof emptyTotals> {
+  for (const key of Object.keys(total) as (keyof typeof total)[]) total[key] += bucket[key]
+  return total
 }
 
 function toCard(summary: SessionSummary): SessionCard {

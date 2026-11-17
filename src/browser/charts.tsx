@@ -39,7 +39,7 @@ export function labelEvery(slotPx: number, minPx: number): number {
   return [1, 2, 5, 10, 20, 25, 50, 100, 200, 500].find((step) => step >= needed) ?? 1000
 }
 
-export const WeekBars = memo(function WeekBars({ days, locale, t }: { readonly days: readonly DayBucket[]; readonly locale: string; readonly t: Translate }) {
+export const WeekBars = /* @__PURE__ */ memo(function WeekBars({ days, locale, t }: { readonly days: readonly DayBucket[]; readonly locale: string; readonly t: Translate }) {
   const tip = useChartTip()
   const width = 320
   const height = 112
@@ -113,7 +113,7 @@ export function heatLevel(tokens: number, max: number): number {
 
 const HEAT_STEPS = [0, 0.25, 0.5, 0.75, 1] as const
 
-export const Heatmap = memo(function Heatmap({
+export const Heatmap = /* @__PURE__ */ memo(function Heatmap({
   cells,
   selected,
   onSelect,
@@ -238,7 +238,7 @@ export const Heatmap = memo(function Heatmap({
   )
 })
 
-export const Donut = memo(function Donut({
+export const Donut = /* @__PURE__ */ memo(function Donut({
   parts,
   t,
 }: {
@@ -394,6 +394,29 @@ export function ContextRing({
       </svg>
       <div className="qc-ring-centre">{children}</div>
     </div>
+  )
+}
+
+const MINI_RING = { size: 16, stroke: 2.5 } as const
+
+/** A small context-fill ring for session tiles; `tone` colours it from the warning line up. */
+export function MiniRing({ ratio, tone, label }: { readonly ratio: number; readonly tone: string; readonly label: string }) {
+  const centre = MINI_RING.size / 2
+  const radius = (MINI_RING.size - MINI_RING.stroke) / 2
+  const circumference = 2 * Math.PI * radius
+  return (
+    <svg className="qc-mini-ring" data-tone={tone} width={MINI_RING.size} height={MINI_RING.size} viewBox={`0 0 ${MINI_RING.size} ${MINI_RING.size}`} role="img" aria-label={label}>
+      <circle className="qc-ring-track" cx={centre} cy={centre} r={radius} strokeWidth={MINI_RING.stroke} />
+      <circle
+        cx={centre}
+        cy={centre}
+        r={radius}
+        fill="none"
+        strokeWidth={MINI_RING.stroke}
+        strokeDasharray={`${Math.min(1, Math.max(0, ratio)) * circumference} ${circumference}`}
+        transform={`rotate(-90 ${centre} ${centre})`}
+      />
+    </svg>
   )
 }
 
@@ -881,7 +904,7 @@ export function toolList(tools: readonly string[]): string {
   return unique.length > 3 ? `${unique.slice(0, 3).join(", ")} +${unique.length - 3}` : unique.join(", ")
 }
 
-export const Legend = memo(function Legend({
+export const Legend = /* @__PURE__ */ memo(function Legend({
   t,
   compactions,
   window,

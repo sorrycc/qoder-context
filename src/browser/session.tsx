@@ -21,14 +21,19 @@ import { enter, prefersReducedMotion } from "./motion.js"
 import {
   contextGauge,
   displayCommand,
+  eventCounts,
   eventRequest,
+  fileFacts,
   isSlow,
   runFacts,
   SLOW_MS,
   splitPath,
   timeline,
   timingParts,
+  visibleFiles,
   visibleRuns,
+  type EventFilter,
+  type FileFilter,
   type Gauge,
   type RunFilter,
   type RunSort,
@@ -353,6 +358,13 @@ function Stat({ label, tone, color, children }: { readonly label: string; readon
 
 const EVENT_ICONS: Record<ContextEvent["kind"], IconName> = { compaction: "scissors", retry: "refresh", error: "alert" }
 const EVENT_TONES: Record<ContextEvent["kind"], string> = { compaction: "warning", retry: "neutral", error: "danger" }
+const EVENT_KINDS = ["compaction", "retry", "error"] as const
+const EVENT_FILTER_LABELS: Record<EventFilter, MessageKey> = {
+  all: "eventsAll",
+  compaction: "eventsCompactions",
+  retry: "eventsRetries",
+  error: "eventsErrors",
+}
 
 function Events({
   events,
@@ -366,7 +378,16 @@ function Events({
   readonly onShow: (event: ContextEvent) => void
   readonly t: Translate
 }) {
-  const items = useMemo(() => timeline(events), [events])
+  const [filter, setFilter] = useState<EventFilter>("all")
+  const counts = useMemo(() => eventCounts(events), [events])
+  // Chips only for kinds the session has, and only when there is more than one to choose between.
+  const kinds = useMemo(() => EVENT_KINDS.filter((kind) => counts[kind] > 0), [counts])
+  const shownKind = kinds.includes(filter as ContextEvent["kind"]) ? filter : "all"
+  const items = useMemo(() => timeline(shownKind === "all" ? events : events.filter((event) => event.kind === shownKind)), [events, shownKind])
+  const filterOptions = useMemo(
+    () => (["all", ...kinds] as const).map((value) => ({ value, label: `${t(EVENT_FILTER_LABELS[value])} ${counts[value].toLocaleString()}` })),
+    [kinds, counts, t],
+  )
   const now = useNow(30_000)
   const tip = useChartTip()
   const hover = useHoverTip(tip, 250)
@@ -405,12 +426,18 @@ function Events({
     </li>
   )
   return (
-    <Card index={11} title={t("eventsTitle")} hint={items.length > 0 ? events.length : undefined}>
+    <Card index={11} title={t("eventsTitle")} hint={events.length > 0 ? events.length : undefined}>
       {items.length === 0 ? (
         <EmptyState compact icon="sparkle" title={t("eventsEmpty")} hint={t("eventsEmptyHint")} />
       ) : (
         <div className="qc-tip-host qc-tally-host" ref={tip.hostRef} {...hover}>
+          {kinds.length > 1 ? (
+            <div className="qc-toolbar">
+              <Segmented label={t("eventsFilterLabel")} value={shownKind} options={filterOptions} onChange={setFilter} />
+            </div>
+          ) : null}
           <CappedList
+            key={shownKind}
             className="qc-timeline"
             items={items}
             cap={EVENT_CAP}
@@ -472,7 +499,19 @@ function EventTip({ item, linked, t }: { readonly item: TimelineItem; readonly l
   )
 }
 
-function Files({ files, t }: { readonly files: readonly FileActivity[]; readonly t: Translate }) {
+const FILE_FILTER_LABELS: Record<FileFilter, MessageKey> = { all: "filesAll", edited: "filesEdited", read: "filesReadOnly" }
+
+function Files({ files: all, t }: { readonly files: readonly FileActivity[]; readonly t: Translate }) {
+  const [filter, setFilter] = useState<FileFilter>("all")
+  const facts = useMemo(() => fileFacts(all), [all])
+  // Chips only when the files split both ways; without them the filter falls back to all.
+  const split = facts.counts.edited > 0 && facts.counts.read > 0
+  const shownFilter = split ? filter : "all"
+  const files = useMemo(() => visibleFiles(all, shownFilter), [all, shownFilter])
+  const filterOptions = useMemo(
+    () => (Object.keys(FILE_FILTER_LABELS) as FileFilter[]).map((value) => ({ value, label: `${t(FILE_FILTER_LABELS[value])} ${facts.counts[value].toLocaleString()}` })),
+    [facts, t],
+  )
   const tip = useChartTip()
   const hover = useHoverTip(tip, 250)
   const max = Math.max(1, ...files.map((file) => file.reads + file.writes))
@@ -486,7 +525,7 @@ function Files({ files, t }: { readonly files: readonly FileActivity[]; readonly
           {dir ? <span className="qc-row-dir"> {dir}</span> : null}
         </span>
         <span className="qc-count">
-          {file.writes > 0 ? <span className="qc-write-count">{t("writesShort", { count: file.writes })}</span> : null}
+          {file.writes > 0 ? <LineDiff added={file.added} removed={file.removed} /> : null}
           {file.reads > 0 ? <span>{t("readsShort", { count: file.reads })}</span> : null}
         </span>
         <span className="qc-tally-bar qc-split-bar">
@@ -500,9 +539,9 @@ function Files({ files, t }: { readonly files: readonly FileActivity[]; readonly
     <Card
       index={12}
       title={t("filesTitle")}
-      hint={files.length > 0 ? files.length : undefined}
+      hint={facts.added + facts.removed > 0 ? <LineDiff added={facts.added} removed={facts.removed} /> : all.length > 0 ? all.length : undefined}
       aside={
-        files.length > 0 ? (
+        all.length > 0 ? (
           <span className="qc-legend qc-legend-inline">
             <span>
               <i className="qc-swatch" style={{ background: SERIES.output }} />
@@ -516,17 +555,36 @@ function Files({ files, t }: { readonly files: readonly FileActivity[]; readonly
         ) : undefined
       }
     >
-      {files.length === 0 ? (
+      {all.length === 0 ? (
         <EmptyState compact icon="file" title={t("emptyFiles")} />
       ) : (
         <div className="qc-tip-host qc-tally-host" ref={tip.hostRef} {...hover}>
-          <CappedList className="qc-tally" items={files} cap={TALLY_CAP} render={row} showAll={t("showAll", { count: files.length })} showLess={t("showLess")} />
+          {split ? (
+            <div className="qc-toolbar">
+              <Segmented label={t("filesFilterLabel")} value={shownFilter} options={filterOptions} onChange={setFilter} />
+            </div>
+          ) : null}
+          <CappedList
+            key={shownFilter}
+            className="qc-tally"
+            items={files}
+            cap={TALLY_CAP}
+            render={row}
+            showAll={t("showAll", { count: files.length })}
+            showLess={t("showLess")}
+          />
           <Tooltip tip={tip}>
             {active ? (
               <TipBody
                 title={splitPath(active.path).name}
                 rows={[
                   { label: t("filesWritten"), value: active.writes.toLocaleString(), color: SERIES.output },
+                  ...(active.writes > 0
+                    ? [
+                        { label: t("linesAdded"), value: `+${active.added.toLocaleString()}`, color: "var(--qc-success)" },
+                        { label: t("linesRemoved"), value: `−${active.removed.toLocaleString()}`, color: "var(--qc-danger)" },
+                      ]
+                    : []),
                   { label: t("filesRead"), value: active.reads.toLocaleString(), color: "var(--qc-read)" },
                   { label: t("tallyLastUsed"), value: relativeTime(t, active.lastAt) },
                 ]}
@@ -537,6 +595,16 @@ function Files({ files, t }: { readonly files: readonly FileActivity[]; readonly
         </div>
       )}
     </Card>
+  )
+}
+
+/** `+12 −3`, coloured, for lines a write added and removed; an empty side is left out. */
+function LineDiff({ added, removed }: { readonly added: number; readonly removed: number }) {
+  return (
+    <span className="qc-diff">
+      {added > 0 || removed === 0 ? <span data-sign="add">+{added.toLocaleString()}</span> : null}
+      {removed > 0 ? <span data-sign="del">−{removed.toLocaleString()}</span> : null}
+    </span>
   )
 }
 

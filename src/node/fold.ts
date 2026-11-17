@@ -100,11 +100,11 @@ export class SessionFold {
   private readonly seenMessages = new Map<string, number>()
   private readonly seenToolUses = new Map<string, string>()
   private readonly pendingTools = new Map<string, string[]>()
-  private readonly days = new Map<string, { tokens: number; requests: number; turns: number; toolRuns: number }>()
+  private readonly days = new Map<string, Omit<Mutable<DayBucket>, "day" | "activeMs">>()
   private readonly tools = new TallyMap()
   private readonly skills = new TallyMap()
   private readonly commands = new TallyMap()
-  private readonly files = new Map<string, { reads: number; writes: number; lastAt: number }>()
+  private readonly files = new Map<string, Omit<Mutable<FileActivity>, "path">>()
   private readonly requests: MutableRequest[] = []
   private events: ContextEvent[] = []
   private runs: Mutable<CommandRun>[] = []
@@ -180,9 +180,7 @@ export class SessionFold {
       toolRuns: this.toolRuns,
       toolErrors: this.toolErrors,
       subagents: this.subagents,
-      days: [...this.days]
-        .map(([day, bucket]): DayBucket => ({ day, ...bucket }))
-        .sort((a, b) => a.day.localeCompare(b.day)),
+      days: this.dayBuckets(),
       tools: this.tools.top(DETAIL_LIMITS.tallies),
       skills: this.skills.top(DETAIL_LIMITS.tallies),
       commands: this.commands.top(DETAIL_LIMITS.tallies),
@@ -205,6 +203,17 @@ export class SessionFold {
       commandsTruncated: this.runsDropped + Math.max(0, this.runs.length - DETAIL_LIMITS.commands),
       timing: this.timing(),
     }
+  }
+
+  private dayBuckets(): DayBucket[] {
+    const active = new Map<string, number>()
+    for (const span of this.spans) {
+      const day = localDay(span.start)
+      active.set(day, (active.get(day) ?? 0) + spanLength(span))
+    }
+    return [...this.days]
+      .map(([day, bucket]): DayBucket => ({ day, ...bucket, activeMs: Math.round(active.get(day) ?? 0) }))
+      .sort((a, b) => a.day.localeCompare(b.day))
   }
 
   private commandRuns(): CommandRun[] {
@@ -246,7 +255,7 @@ export class SessionFold {
     const day = localDay(at)
     let bucket = this.days.get(day)
     if (!bucket) {
-      bucket = { tokens: 0, requests: 0, turns: 0, toolRuns: 0 }
+      bucket = { tokens: 0, requests: 0, turns: 0, toolRuns: 0, shellRuns: 0, shellFailures: 0 }
       this.days.set(day, bucket)
     }
     return bucket
@@ -279,6 +288,11 @@ export class SessionFold {
       run.status = outcome.status
       run.exitCode = outcome.exitCode
       if (at !== null) run.durationMs = Math.max(0, at - run.at)
+      if (outcome.status === "ok" || outcome.status === "failed") {
+        const bucket = this.bucket(run.at)
+        bucket.shellRuns += 1
+        if (outcome.status === "failed") bucket.shellFailures += 1
+      }
     }
   }
 
@@ -369,7 +383,7 @@ export class SessionFold {
     }
     const path =
       typeof input.file_path === "string" ? input.file_path : typeof input.notebook_path === "string" ? input.notebook_path : null
-    if (path && (READ_TOOLS.has(name) || WRITE_TOOLS.has(name))) this.addFile(path, WRITE_TOOLS.has(name), at)
+    if (path && (READ_TOOLS.has(name) || WRITE_TOOLS.has(name))) this.addFile(path, WRITE_TOOLS.has(name) ? editLines(name, input) : null, at)
   }
 
   private addRun(run: Pick<CommandRun, "id" | "command" | "programs" | "at" | "requestIndex" | "subagent">): void {
@@ -384,15 +398,21 @@ export class SessionFold {
     }
   }
 
-  private addFile(path: string, write: boolean, at: number): void {
+  /** `lines` is what a write changed, or null for a read. */
+  private addFile(path: string, lines: LineChange | null, at: number): void {
     let entry = this.files.get(path)
     if (!entry) {
       if (this.files.size >= FILE_TRACK_LIMIT) return
-      entry = { reads: 0, writes: 0, lastAt: at }
+      entry = { reads: 0, writes: 0, added: 0, removed: 0, lastAt: at }
       this.files.set(path, entry)
     }
-    if (write) entry.writes += 1
-    else entry.reads += 1
+    if (lines) {
+      entry.writes += 1
+      entry.added += lines.added
+      entry.removed += lines.removed
+    } else {
+      entry.reads += 1
+    }
     entry.lastAt = Math.max(entry.lastAt, at)
   }
 
@@ -460,6 +480,43 @@ export function commandOutcome(result: unknown, isError: boolean): { readonly st
   }
   if (isError || (exitCode !== null && exitCode !== 0 && typeof info.returnCodeInterpretation !== "string")) return { status: "failed", exitCode }
   return { status: "ok", exitCode }
+}
+
+interface LineChange {
+  readonly added: number
+  readonly removed: number
+}
+
+/** Lines a write tool's input adds and removes. Edits count only the lines that differ. */
+export function editLines(tool: string, input: Json): LineChange {
+  const text = (value: unknown) => (typeof value === "string" ? value : "")
+  if (tool === "Write") return { added: lineCount(text(input.content)), removed: 0 }
+  if (tool === "NotebookEdit") return { added: lineCount(text(input.new_source)), removed: 0 }
+  const edits = tool === "MultiEdit" && Array.isArray(input.edits) ? input.edits.filter(isRecord) : [input]
+  let added = 0
+  let removed = 0
+  for (const edit of edits) {
+    const change = lineDiff(text(edit.old_string), text(edit.new_string))
+    added += change.added
+    removed += change.removed
+  }
+  return { added, removed }
+}
+
+function lineCount(text: string): number {
+  if (!text) return 0
+  return text.split("\n").length - (text.endsWith("\n") ? 1 : 0)
+}
+
+/** Lines left once the lines both sides share at the start and end are set aside. */
+function lineDiff(before: string, after: string): LineChange {
+  const old = before ? before.split("\n") : []
+  const next = after ? after.split("\n") : []
+  let head = 0
+  while (head < old.length && head < next.length && old[head] === next[head]) head += 1
+  let tail = 0
+  while (tail < old.length - head && tail < next.length - head && old[old.length - 1 - tail] === next[next.length - 1 - tail]) tail += 1
+  return { added: next.length - head - tail, removed: old.length - head - tail }
 }
 
 function spanLength(span: Span): number {

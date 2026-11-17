@@ -6,18 +6,21 @@ import { ringArcs } from "../../src/browser/charts.js"
 import {
   contextGauge,
   displayCommand,
+  eventCounts,
   eventRequest,
+  fileFacts,
   promptDeltas,
   runFacts,
   SLOW_MS,
   splitPath,
   timeline,
   timingParts,
+  visibleFiles,
   visibleRuns,
 } from "../../src/browser/session-model.js"
 import { SessionDetails } from "../../src/node/session.js"
 import { TranscriptLocator } from "../../src/node/transcripts.js"
-import type { CommandRun, ContextEvent, RequestPoint, SessionDetail } from "../../src/shared/types.js"
+import type { CommandRun, ContextEvent, FileActivity, RequestPoint, SessionDetail } from "../../src/shared/types.js"
 import { assistant, human } from "./fixtures.js"
 
 function request(prompt: number, cacheRead = 0): RequestPoint {
@@ -112,6 +115,22 @@ describe("timeline", () => {
     ])
     // Keys stay put as the run grows, so a refresh doesn't remount the row.
     expect(timeline([retry(1), retry(2)])[0]?.key).toBe(timeline([retry(1)])[0]?.key)
+  })
+})
+
+describe("event and file filters", () => {
+  it("counts events per kind", () => {
+    const error: ContextEvent = { kind: "error", at: 1, text: "x", requestIndex: 0 }
+    expect(eventCounts([compaction(1), error, { ...error, at: 2 }])).toEqual({ all: 3, compaction: 1, retry: 0, error: 2 })
+  })
+
+  it("splits files into edited and read-only with line totals", () => {
+    const file = (path: string, writes: number, added = 0, removed = 0): FileActivity => ({ path, reads: 1, writes, added, removed, lastAt: 0 })
+    const files = [file("/a", 2, 10, 3), file("/b", 0), file("/c", 1, 1)]
+    expect(fileFacts(files)).toEqual({ counts: { all: 3, edited: 2, read: 1 }, added: 11, removed: 3 })
+    expect(visibleFiles(files, "edited").map((f) => f.path)).toEqual(["/a", "/c"])
+    expect(visibleFiles(files, "read").map((f) => f.path)).toEqual(["/b"])
+    expect(visibleFiles(files, "all")).toBe(files)
   })
 })
 

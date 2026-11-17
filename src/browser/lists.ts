@@ -3,9 +3,13 @@ import type { SessionCard } from "../shared/types.js"
 
 export type Sort = "recent" | "tokens" | "context"
 export type TallyKind = "tools" | "skills" | "commands"
+/** How the session list is sectioned: by the day each was last active, or by project folder. */
+export type Grouping = "date" | "workspace"
 export interface Filter {
   readonly day: string | null
   readonly tally: { readonly kind: TallyKind; readonly name: string } | null
+  /** A project folder (a session's cwd). */
+  readonly workspace: string | null
   readonly query: string
 }
 
@@ -19,6 +23,7 @@ export function visibleSessions(sessions: readonly SessionCard[], filter: Filter
   const result = sessions.filter((session) => {
     if (filter.day && !session.days.includes(filter.day)) return false
     if (filter.tally && !session[filter.tally.kind].includes(filter.tally.name)) return false
+    if (filter.workspace !== null && session.cwd !== filter.workspace) return false
     if (terms.length === 0) return true
     const haystack = `${session.title ?? ""} ${session.cwd ?? ""}`.toLowerCase()
     return terms.every((term) => haystack.includes(term))
@@ -54,28 +59,46 @@ export function highlight(text: string, terms: readonly string[]): Segment[] {
   return segments
 }
 
-export type DayLabel = { readonly kind: "today" | "yesterday" } | { readonly kind: "date"; readonly day: string }
+export type GroupLabel =
+  | { readonly kind: "today" | "yesterday" }
+  | { readonly kind: "date"; readonly day: string }
+  | { readonly kind: "workspace"; readonly path: string | null }
 
 export interface SessionGroup {
   readonly key: string
   /** Null for a flat list (non-chronological sorts), which shows no group header. */
-  readonly label: DayLabel | null
+  readonly label: GroupLabel | null
   readonly sessions: readonly SessionCard[]
+  /** Sessions and tokens of the whole group, also when `sessions` is one page of it. */
+  readonly count: number
   readonly tokens: number
 }
 
 /**
- * Groups sessions by the local day they were last active, in their given order, so a recency-sorted
- * list reads Today / Yesterday / dates. Other sorts keep one unlabelled group.
+ * Groups sessions in their given order. By date, a recency-sorted list reads Today / Yesterday /
+ * dates and other sorts keep one unlabelled group. By workspace, folders come in the order their
+ * first session does, so the sort decides which folder leads; sessions without one come last.
  */
-export function groupSessions(sessions: readonly SessionCard[], sort: Sort, now = Date.now()): SessionGroup[] {
+export function groupSessions(sessions: readonly SessionCard[], sort: Sort, by: Grouping = "date", now = Date.now()): SessionGroup[] {
+  if (by === "workspace") {
+    const folders = new Map<string | null, SessionCard[]>()
+    for (const session of sessions) {
+      const list = folders.get(session.cwd)
+      if (list) list.push(session)
+      else folders.set(session.cwd, [session])
+    }
+    const loose = folders.get(null)
+    folders.delete(null)
+    if (loose) folders.set(null, loose)
+    return [...folders].map(([path, list]) => finish({ key: `ws:${path ?? ""}`, label: { kind: "workspace", path }, sessions: list }))
+  }
   if (sort !== "recent") {
-    return sessions.length === 0 ? [] : [{ key: "all", label: null, sessions, tokens: sumTokens(sessions) }]
+    return sessions.length === 0 ? [] : [finish({ key: "all", label: null, sessions })]
   }
   const today = localDay(now)
   const date = new Date(now)
   const yesterday = localDay(new Date(date.getFullYear(), date.getMonth(), date.getDate() - 1, 12).getTime())
-  const groups: { key: string; label: DayLabel; sessions: SessionCard[] }[] = []
+  const groups: { key: string; label: GroupLabel; sessions: SessionCard[] }[] = []
   for (const session of sessions) {
     const day = localDay(session.lastAt)
     const last = groups.at(-1)
@@ -83,14 +106,26 @@ export function groupSessions(sessions: readonly SessionCard[], sort: Sort, now 
       last.sessions.push(session)
       continue
     }
-    const label: DayLabel = day === today ? { kind: "today" } : day === yesterday ? { kind: "yesterday" } : { kind: "date", day }
+    const label: GroupLabel = day === today ? { kind: "today" } : day === yesterday ? { kind: "yesterday" } : { kind: "date", day }
     groups.push({ key: day, label, sessions: [session] })
   }
-  return groups.map((group) => ({ ...group, tokens: sumTokens(group.sessions) }))
+  return groups.map(finish)
 }
 
-function sumTokens(sessions: readonly SessionCard[]): number {
-  return sessions.reduce((sum, session) => sum + session.tokens, 0)
+function finish(group: Pick<SessionGroup, "key" | "label" | "sessions">): SessionGroup {
+  return { ...group, count: group.sessions.length, tokens: group.sessions.reduce((sum, session) => sum + session.tokens, 0) }
+}
+
+/** The first `limit` sessions across `groups`, keeping each group's whole count and tokens. */
+export function pageGroups(groups: readonly SessionGroup[], limit: number): SessionGroup[] {
+  const page: SessionGroup[] = []
+  let left = limit
+  for (const group of groups) {
+    if (left <= 0) break
+    page.push(group.sessions.length <= left ? group : { ...group, sessions: group.sessions.slice(0, left) })
+    left -= group.sessions.length
+  }
+  return page
 }
 
 /** Sessions rendered per page; more load as the list scrolls into view. */

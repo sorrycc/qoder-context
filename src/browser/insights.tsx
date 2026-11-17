@@ -2,19 +2,21 @@ import { Button } from "@qoder-space/design-system"
 import type { PluginViewContext } from "@qoder/plugin-api/view"
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { formatPercent, formatTokens, shortPath } from "../shared/format.js"
-import { SERVICE_NAME, type Overview, type OverviewResponse, type Range, type SessionCard, type Tally } from "../shared/types.js"
-import { Donut, Heatmap, longDate, MiniStack, SERIES, WeekBars } from "./charts.js"
+import { SERVICE_NAME, type Overview, type OverviewResponse, type Range, type SessionCard, type Tally, type WorkspaceTally } from "../shared/types.js"
+import { Donut, Heatmap, longDate, MiniRing, MiniStack, SERIES, WeekBars } from "./charts.js"
 import { registerView, useLoad } from "./host.js"
-import { relativeTime, type MessageKey, type Translate } from "./i18n.js"
+import { dateTime, formatDuration, relativeTime, type MessageKey, type Translate } from "./i18n.js"
 import {
   groupSessions,
   highlight,
+  pageGroups,
   searchTerms,
   SESSION_PAGE,
   TALLY_CAP,
   visibleSessions,
-  type DayLabel,
   type Filter,
+  type GroupLabel,
+  type Grouping,
   type Sort,
   type TallyKind,
 } from "./lists.js"
@@ -23,6 +25,7 @@ import { TipBody, Tooltip, useChartTip, useHoverTip } from "./tooltip.js"
 import {
   CappedList,
   Card,
+  contextTone,
   EmptyState,
   formatCount,
   Icon,
@@ -37,6 +40,7 @@ import {
 
 const RANGE_LABELS: Record<Range, MessageKey> = { today: "rangeToday", "7d": "range7d", "30d": "range30d" }
 const SORT_LABELS: Record<Sort, MessageKey> = { recent: "sortRecent", tokens: "sortTokens", context: "sortContext" }
+const GROUP_LABELS: Record<Grouping, MessageKey> = { date: "groupDate", workspace: "groupWorkspace" }
 
 registerView((context, t) => <Insights context={context} t={t} />)
 
@@ -103,13 +107,17 @@ function Insights({ context, t }: { readonly context: PluginViewContext; readonl
 function Placeholder() {
   return (
     <>
-      <KpiSkeletons count={6} />
+      <KpiSkeletons count={8} className="qc-kpis-8" />
+      <div className="qc-grid qc-two">
+        <Skeleton height={190} />
+        <Skeleton height={190} />
+      </div>
       <div className="qc-grid qc-two">
         <Skeleton height={190} />
         <Skeleton height={190} />
       </div>
       <div className="qc-grid qc-four">
-        {Array.from({ length: 4 }, (_, index) => (
+        {Array.from({ length: 3 }, (_, index) => (
           <Skeleton key={index} height={160} />
         ))}
       </div>
@@ -121,17 +129,20 @@ function Placeholder() {
 const Dashboard = memo(function Dashboard({ context, data, t }: { readonly context: PluginViewContext; readonly data: Overview; readonly t: Translate }) {
   const [day, setDay] = useState<string | null>(null)
   const [tally, setTally] = useState<Filter["tally"]>(null)
+  const [workspace, setWorkspace] = useState<string | null>(null)
   const [search, setSearch] = useState("")
   const query = useDebounced(search, 150)
   const [sort, setSort] = useState<Sort>("recent")
+  const [grouping, setGrouping] = useState<Grouping>("date")
   const [openError, setOpenError] = useState<string | null>(null)
-  const filter = useMemo<Filter>(() => ({ day, tally, query }), [day, tally, query])
+  const filter = useMemo<Filter>(() => ({ day, tally, workspace, query }), [day, tally, workspace, query])
   const sessions = useMemo(() => visibleSessions(data.sessions, filter, sort), [data.sessions, filter, sort])
   const usage = useMemo(() => sessionsPerTally(data.sessions), [data.sessions])
   const toggleTally = useCallback(
     (kind: TallyKind, name: string) => setTally((current) => (current?.kind === kind && current.name === name ? null : { kind, name })),
     [],
   )
+  const toggleWorkspace = useCallback((path: string) => setWorkspace((current) => (current === path ? null : path)), [])
   const open = useCallback(
     (id: string) => {
       setOpenError(null)
@@ -139,13 +150,20 @@ const Dashboard = memo(function Dashboard({ context, data, t }: { readonly conte
     },
     [context],
   )
-  const filtered = day !== null || tally !== null || query.trim() !== ""
-  const clearAll = () => {
+  const filtered = day !== null || tally !== null || workspace !== null || query.trim() !== ""
+  const clearFilters = () => {
     setDay(null)
     setTally(null)
+    setWorkspace(null)
+  }
+  const clearAll = () => {
+    clearFilters()
     setSearch("")
   }
   const sortOptions = useMemo(() => (Object.keys(SORT_LABELS) as Sort[]).map((value) => ({ value, label: t(SORT_LABELS[value]) })), [t])
+  const groupOptions = useMemo(() => (Object.keys(GROUP_LABELS) as Grouping[]).map((value) => ({ value, label: t(GROUP_LABELS[value]) })), [t])
+  const { kpi } = data
+  const shellRate = kpi.shellRuns > 0 ? kpi.shellFailures / kpi.shellRuns : null
   const parts = useMemo(
     () => [
       { label: t("cacheRead"), value: data.composition.cacheRead, color: SERIES.cacheRead },
@@ -159,28 +177,46 @@ const Dashboard = memo(function Dashboard({ context, data, t }: { readonly conte
 
   return (
     <>
-      <div className="qc-grid qc-kpis">
+      <div className="qc-grid qc-kpis qc-kpis-8">
         <Kpi index={0} label={t("kpiSessions")} value={data.kpi.sessions} format={formatCount} />
         <Kpi index={1} label={t("kpiTokens")} value={data.kpi.tokens} format={formatTokenValue} tone="accent" />
         <Kpi index={2} label={t("kpiCacheHit")} value={data.kpi.cacheHitRate} format={formatRatio} tone="success" />
         <Kpi index={3} label={t("kpiTurns")} value={data.kpi.turns} format={formatCount} />
         <Kpi index={4} label={t("kpiRequests")} value={data.kpi.requests} format={formatCount} />
         <Kpi index={5} label={t("kpiToolRuns")} value={data.kpi.toolRuns} format={formatCount} />
+        <Kpi
+          index={6}
+          label={t("kpiActive")}
+          value={kpi.activeMs}
+          format={formatDuration}
+          sub={kpi.sessions > 0 && kpi.activeMs > 0 ? t("kpiActiveSub", { per: formatDuration(kpi.activeMs / kpi.sessions) }) : undefined}
+        />
+        <Kpi
+          index={7}
+          label={t("kpiFailRate")}
+          value={shellRate}
+          format={formatRatio}
+          tone={shellRate !== null && shellRate >= 0.2 ? "danger" : shellRate !== null && shellRate >= 0.1 ? "warning" : "neutral"}
+          sub={shellRate === null ? t("kpiFailNone") : t("kpiFailSub", { failed: kpi.shellFailures.toLocaleString(), runs: kpi.shellRuns.toLocaleString() })}
+        />
       </div>
       <div className="qc-grid qc-two">
-        <Card index={6} title={t("weekTitle")}>
+        <Card index={8} title={t("weekTitle")}>
           <WeekBars days={data.week} locale={context.locale} t={t} />
         </Card>
-        <Card index={7} title={t("heatmapTitle")} hint={t("heatmapHint")}>
+        <Card index={9} title={t("heatmapTitle")} hint={t("heatmapHint")}>
           <Heatmap cells={data.heatmap} selected={day} onSelect={setDay} locale={context.locale} t={t} />
         </Card>
       </div>
-      <div className="qc-grid qc-four">
-        <Card index={8} title={t("compositionTitle")}>
+      <div className="qc-grid qc-split">
+        <WorkspacesCard workspaces={data.workspaces} selected={workspace} onToggle={toggleWorkspace} t={t} />
+        <Card index={11} title={t("compositionTitle")}>
           <Donut t={t} parts={parts} />
         </Card>
+      </div>
+      <div className="qc-grid qc-four">
         <TallyCard
-          index={9}
+          index={12}
           title={t("toolsTitle")}
           kind="tools"
           tallies={data.tools}
@@ -190,7 +226,7 @@ const Dashboard = memo(function Dashboard({ context, data, t }: { readonly conte
           {...tallyProps}
         />
         <TallyCard
-          index={10}
+          index={13}
           title={t("skillsTitle")}
           kind="skills"
           tallies={data.skills}
@@ -201,7 +237,7 @@ const Dashboard = memo(function Dashboard({ context, data, t }: { readonly conte
           {...tallyProps}
         />
         <TallyCard
-          index={11}
+          index={14}
           title={t("commandsTitle")}
           kind="commands"
           tallies={data.commands}
@@ -213,7 +249,7 @@ const Dashboard = memo(function Dashboard({ context, data, t }: { readonly conte
       </div>
       <p className="qc-note">{t("estimateNote")}</p>
       <Card
-        index={12}
+        index={15}
         className="qc-sessions-card"
         title={t("sessionsTitle")}
         aside={
@@ -225,19 +261,13 @@ const Dashboard = memo(function Dashboard({ context, data, t }: { readonly conte
         <div className="qc-toolbar">
           <SearchField value={search} onChange={setSearch} t={t} />
           <Segmented label={t("sortLabel")} value={sort} options={sortOptions} onChange={setSort} />
-          {day || tally ? (
+          <Segmented label={t("groupLabel")} value={grouping} options={groupOptions} onChange={setGrouping} />
+          {day || tally || workspace ? (
             <span className="qc-chip">
               <span className="qc-name">
-                {t("filteredBy")}: {[day ? longDate(day, context.locale) : null, tally?.name].filter(Boolean).join(" · ")}
+                {t("filteredBy")}: {[day ? longDate(day, context.locale) : null, tally?.name, workspace ? shortPath(workspace) : null].filter(Boolean).join(" · ")}
               </span>
-              <button
-                type="button"
-                aria-label={t("clearFilter")}
-                onClick={() => {
-                  setDay(null)
-                  setTally(null)
-                }}
-              >
+              <button type="button" aria-label={t("clearFilter")} onClick={clearFilters}>
                 <Icon name="close" size={12} />
               </button>
             </span>
@@ -258,7 +288,7 @@ const Dashboard = memo(function Dashboard({ context, data, t }: { readonly conte
             }
           />
         ) : (
-          <SessionList sessions={sessions} sort={sort} query={query} locale={context.locale} onOpen={open} t={t} />
+          <SessionList sessions={sessions} sort={sort} grouping={grouping} query={query} locale={context.locale} onOpen={open} t={t} />
         )}
         {data.sessionsTruncated > 0 ? <p className="qc-note">{t("moreSessions", { count: data.sessionsTruncated })}</p> : null}
       </Card>
@@ -398,9 +428,93 @@ const TallyCard = memo(function TallyCard({
   )
 })
 
+/** The last path segment as the name, the rest (home-shortened) as context. */
+function folderParts(path: string): { readonly name: string; readonly dir: string } {
+  const short = shortPath(path)
+  const cut = short.replace(/[/\\]+$/, "").search(/[^/\\]+$/)
+  return cut > 0 ? { name: short.slice(cut), dir: short.slice(0, cut - 1) } : { name: short, dir: "" }
+}
+
+const WorkspacesCard = memo(function WorkspacesCard({
+  workspaces,
+  selected,
+  onToggle,
+  t,
+}: {
+  readonly workspaces: readonly WorkspaceTally[]
+  readonly selected: string | null
+  readonly onToggle: (path: string) => void
+  readonly t: Translate
+}) {
+  const tip = useChartTip()
+  const hover = useHoverTip(tip, 120)
+  const max = Math.max(1, ...workspaces.map((workspace) => workspace.tokens))
+  const total = workspaces.reduce((sum, workspace) => sum + workspace.tokens, 0)
+  const chosen = selected === null ? -1 : workspaces.findIndex((workspace) => workspace.path === selected)
+  const active = tip.active === null ? undefined : workspaces[tip.active]
+  const row = (workspace: WorkspaceTally, position: number) => {
+    const { name, dir } = folderParts(workspace.path)
+    return (
+      <li key={workspace.path}>
+        <button type="button" data-qc-tip={position} aria-pressed={position === chosen} aria-describedby={tip.id} onClick={() => onToggle(workspace.path)}>
+          <span className="qc-name">
+            {name}
+            {dir ? <span className="qc-row-dir"> {dir}</span> : null}
+          </span>
+          <span className="qc-count">
+            {formatTokens(workspace.tokens)} <span className="qc-muted">· {workspace.sessions.toLocaleString()}</span>
+          </span>
+          <span className="qc-tally-bar">
+            <span style={{ width: `${(workspace.tokens / max) * 100}%`, ...enter(position) }} />
+          </span>
+        </button>
+      </li>
+    )
+  }
+  return (
+    <Card index={10} title={t("workspacesTitle")} hint={workspaces.length > 0 ? t("workspacesHint") : undefined}>
+      {workspaces.length === 0 ? (
+        <EmptyState compact icon="folder" title={t("emptyWorkspaces")} />
+      ) : (
+        <div className="qc-tip-host" ref={tip.hostRef} {...hover}>
+          <CappedList
+            className="qc-tally"
+            items={workspaces}
+            cap={TALLY_CAP}
+            render={row}
+            showAll={t("showAll", { count: workspaces.length })}
+            showLess={t("showLess")}
+            forceOpen={chosen >= TALLY_CAP}
+          />
+          <Tooltip tip={tip}>
+            {active ? (
+              <TipBody
+                title={folderParts(active.path).name}
+                rows={[
+                  { label: t("kpiTokens"), value: `${formatTokens(active.tokens)} · ${formatPercent(total > 0 ? active.tokens / total : null, 0)}` },
+                  { label: t("tallySessions"), value: active.sessions.toLocaleString() },
+                  { label: t("kpiActive"), value: formatDuration(active.activeMs) },
+                  { label: t("lastActive"), value: relativeTime(t, active.lastAt) },
+                ]}
+                note={
+                  <>
+                    <div className="qc-tip-path">{active.path}</div>
+                    {tip.active === chosen ? t("heatClickToClear") : t("heatClickToFilter")}
+                  </>
+                }
+              />
+            ) : null}
+          </Tooltip>
+        </div>
+      )}
+    </Card>
+  )
+})
+
 function SessionList({
   sessions,
   sort,
+  grouping,
   query,
   locale,
   onOpen,
@@ -408,6 +522,7 @@ function SessionList({
 }: {
   readonly sessions: readonly SessionCard[]
   readonly sort: Sort
+  readonly grouping: Grouping
   readonly query: string
   readonly locale: string
   readonly onOpen: (id: string) => void
@@ -420,8 +535,10 @@ function SessionList({
     setShownFor(sessions)
     setLimit(SESSION_PAGE)
   }
-  const shown = useMemo(() => sessions.slice(0, limit), [sessions, limit])
-  const groups = useMemo(() => groupSessions(shown, sort), [shown, sort])
+  const allGroups = useMemo(() => groupSessions(sessions, sort, grouping), [sessions, sort, grouping])
+  const groups = useMemo(() => pageGroups(allGroups, limit), [allGroups, limit])
+  // Tiles in the order they render, which grouping by folder can change.
+  const shown = useMemo(() => groups.flatMap((group) => group.sessions), [groups])
   const terms = useMemo(() => searchTerms(query), [query])
   const remaining = sessions.length - shown.length
   const more = useCallback(() => setLimit((current) => current + SESSION_PAGE), [])
@@ -446,15 +563,18 @@ function SessionList({
           <section key={group.key} className="qc-group">
             {group.label ? (
               <header className="qc-group-head">
-                <span className="qc-group-title">{dayLabel(group.label, locale, t)}</span>
-                <span className="qc-badge">{group.sessions.length}</span>
+                {group.label.kind === "workspace" ? <Icon name="folder" size={13} /> : null}
+                <span className="qc-group-title qc-name">{groupLabel(group.label, locale, t)}</span>
+                <span className="qc-badge">{group.count}</span>
                 <span className="qc-group-tokens">{formatTokens(group.tokens)}</span>
               </header>
             ) : null}
             <div className="qc-sessions">
               {group.sessions.map((session) => {
                 const at = position++
-                return <SessionTile key={session.id} index={at} session={session} terms={terms} onOpen={onOpen} t={t} />
+                return (
+                  <SessionTile key={session.id} index={at} session={session} terms={terms} showPath={grouping !== "workspace"} onOpen={onOpen} t={t} />
+                )
               })}
             </div>
           </section>
@@ -468,12 +588,13 @@ function SessionList({
           </button>
         </div>
       ) : null}
-      <Tooltip tip={tip}>{active ? <SessionTip session={active} locale={locale} t={t} /> : null}</Tooltip>
+      <Tooltip tip={tip}>{active ? <SessionTip session={active} t={t} /> : null}</Tooltip>
     </div>
   )
 }
 
-function dayLabel(label: DayLabel, locale: string, t: Translate): string {
+function groupLabel(label: GroupLabel, locale: string, t: Translate): string {
+  if (label.kind === "workspace") return label.path === null ? t("noFolder") : shortPath(label.path)
   if (label.kind === "date") return longDate(label.day, locale)
   return t(label.kind === "today" ? "rangeToday" : "yesterday")
 }
@@ -498,12 +619,15 @@ const SessionTile = memo(function SessionTile({
   index,
   session,
   terms,
+  showPath,
   onOpen,
   t,
 }: {
   readonly index: number
   readonly session: SessionCard
   readonly terms: readonly string[]
+  /** Off when a folder header above already names it. */
+  readonly showPath: boolean
   readonly onOpen: (id: string) => void
   readonly t: Translate
 }) {
@@ -513,7 +637,7 @@ const SessionTile = memo(function SessionTile({
       <span className="qc-session-title">
         <Highlighted text={session.title ?? t("untitled")} terms={terms} />
       </span>
-      {session.cwd ? (
+      {session.cwd && showPath ? (
         <span className="qc-session-path">
           <Highlighted text={shortPath(session.cwd)} terms={terms} />
         </span>
@@ -522,7 +646,8 @@ const SessionTile = memo(function SessionTile({
       <span className="qc-session-meta">
         <span>{formatTokens(session.tokens)}</span>
         <span>{t("turnsShort", { count: session.turns })}</span>
-        <span data-tone={share !== null && share >= 0.8 ? (share >= 0.95 ? "danger" : "warning") : undefined}>
+        <span className="qc-session-context" data-tone={share !== null && share >= 0.8 ? contextTone(share) : undefined}>
+          {share !== null ? <MiniRing ratio={share} tone={contextTone(share)} label={t("contextShare", { share: formatPercent(share, 0) })} /> : null}
           {formatTokens(session.contextTokens)}
           {share !== null ? ` · ${formatPercent(share, 0)}` : ""}
         </span>
@@ -532,7 +657,7 @@ const SessionTile = memo(function SessionTile({
   )
 })
 
-function SessionTip({ session, locale, t }: { readonly session: SessionCard; readonly locale: string; readonly t: Translate }) {
+function SessionTip({ session, t }: { readonly session: SessionCard; readonly t: Translate }) {
   const share = session.contextWindow ? session.contextTokens / session.contextWindow : null
   return (
     <TipBody
@@ -546,7 +671,7 @@ function SessionTip({ session, locale, t }: { readonly session: SessionCard; rea
           label: t("contextNow"),
           value: `${formatTokens(session.contextTokens)}${share !== null ? ` · ${formatPercent(share, 0)}` : ""}`,
         },
-        { label: t("lastActive"), value: new Date(session.lastAt).toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" }) },
+        { label: t("lastActive"), value: dateTime(t, session.lastAt) },
       ]}
       note={
         <>

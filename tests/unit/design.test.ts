@@ -46,6 +46,13 @@ describe("motion", () => {
     expect(enter(40, 16)).toEqual({ "--qc-i": 16 })
   })
 
+  it("pairs every per-view style block with an end marker, without nesting", () => {
+    const markers = [...STYLES.matchAll(/\/\* @(view \w+|end) \*\//g)].map((match) => (match[1] === "end" ? "end" : "view"))
+    expect(markers.length).toBeGreaterThan(0)
+    expect(markers.every((marker, index) => marker === (index % 2 === 0 ? "view" : "end"))).toBe(true)
+    expect(markers.length % 2).toBe(0)
+  })
+
   it("drops motion under prefers-reduced-motion", () => {
     expect(STYLES).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*animation: none !important/)
   })

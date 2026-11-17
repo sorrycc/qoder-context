@@ -47,7 +47,7 @@ export function Card({
   )
 }
 
-export const Kpi = memo(function Kpi({
+export const Kpi = /* @__PURE__ */ memo(function Kpi({
   label,
   value,
   format,
@@ -77,9 +77,9 @@ export function Skeleton({ height, width, radius }: { readonly height: number; r
   return <div className="qc-skeleton" style={{ height, width, borderRadius: radius }} aria-hidden="true" />
 }
 
-export function KpiSkeletons({ count }: { readonly count: number }) {
+export function KpiSkeletons({ count, className }: { readonly count: number; readonly className?: string }) {
   return (
-    <div className="qc-grid qc-kpis" aria-hidden="true">
+    <div className={`qc-grid qc-kpis${className ? ` ${className}` : ""}`} aria-hidden="true">
       {Array.from({ length: count }, (_, index) => (
         <div key={index} className="qc-card qc-kpi qc-kpi-skeleton">
           <Skeleton height={10} width="55%" radius="var(--qc-radius-pill)" />

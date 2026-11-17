@@ -5,12 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { aggregate, hash, OverviewIndex } from "../../src/node/overview.js"
 import { TranscriptLocator, resolveProjectsRoot } from "../../src/node/transcripts.js"
 import { localDay } from "../../src/shared/days.js"
-import type { SessionSummary } from "../../src/shared/types.js"
+import type { DayBucket, SessionSummary } from "../../src/shared/types.js"
 import { assistant, human, T0, toolUse } from "./fixtures.js"
 
 const DAY = 86_400_000
 
-function summary(id: string, days: { day: string; tokens: number }[], extra: Partial<SessionSummary> = {}): SessionSummary {
+function summary(id: string, days: ({ day: string; tokens: number } & Partial<DayBucket>)[], extra: Partial<SessionSummary> = {}): SessionSummary {
   return {
     id,
     title: id,
@@ -28,7 +28,7 @@ function summary(id: string, days: { day: string; tokens: number }[], extra: Par
     toolRuns: 0,
     toolErrors: 0,
     subagents: 0,
-    days: days.map((bucket) => ({ ...bucket, requests: 1, turns: 1, toolRuns: 2 })),
+    days: days.map((bucket) => ({ requests: 1, turns: 1, toolRuns: 2, activeMs: 1_000, shellRuns: 2, shellFailures: 1, ...bucket })),
     tools: [{ name: "Bash", count: 2, lastAt: T0 }],
     skills: [],
     commands: [],
@@ -53,6 +53,26 @@ describe("aggregate", () => {
     expect(overview.heatmap.find((cell) => cell.day === old)).toMatchObject({ tokens: 16, requests: 2 })
     expect(overview.sessions.map((card) => card.id)).toEqual(["recent"])
     expect(overview.tools).toEqual([{ name: "Bash", count: 2, lastAt: T0 }])
+  })
+
+  it("sums active time and shell outcomes in range and ranks folders by tokens", () => {
+    const today = localDay(T0)
+    const old = localDay(T0 - 10 * DAY)
+    const overview = aggregate(
+      [
+        summary("a", [{ day: today, tokens: 50 }, { day: old, tokens: 500, activeMs: 9_000 }], { cwd: "/work/one", lastAt: T0 - 5 }),
+        summary("b", [{ day: today, tokens: 70 }], { cwd: "/work/two" }),
+        summary("c", [{ day: today, tokens: 5 }], { cwd: "/work/one", lastAt: T0 }),
+        summary("d", [{ day: today, tokens: 1 }], { cwd: null }),
+      ],
+      "7d",
+      T0,
+    )
+    expect(overview.kpi).toMatchObject({ activeMs: 4_000, shellRuns: 8, shellFailures: 4 })
+    expect(overview.workspaces).toEqual([
+      { path: "/work/two", sessions: 1, tokens: 70, activeMs: 1_000, lastAt: T0 },
+      { path: "/work/one", sessions: 2, tokens: 55, activeMs: 2_000, lastAt: T0 },
+    ])
   })
 
   it("returns no cache-hit rate when nothing is in range", () => {

@@ -22,6 +22,11 @@ export interface DayBucket {
   readonly requests: number
   readonly turns: number
   readonly toolRuns: number
+  /** Model, tool and compaction time started that day (see TimingStats). */
+  readonly activeMs: number
+  /** Shell runs that finished that day with a success or a failure, and how many failed. */
+  readonly shellRuns: number
+  readonly shellFailures: number
 }
 
 /** Compact per-session facts; cached on disk and aggregated by the overview. */
@@ -111,6 +116,9 @@ export interface FileActivity {
   readonly path: string
   readonly reads: number
   readonly writes: number
+  /** Lines the writes added and removed, from the edit inputs (a whole-file write counts as added). */
+  readonly added: number
+  readonly removed: number
   readonly lastAt: number
 }
 
@@ -151,6 +159,15 @@ export interface SessionCard {
   readonly commands: readonly string[]
 }
 
+/** One project folder's share of the range. */
+export interface WorkspaceTally {
+  readonly path: string
+  readonly sessions: number
+  readonly tokens: number
+  readonly activeMs: number
+  readonly lastAt: number
+}
+
 export interface Overview {
   readonly range: Range
   readonly generatedAt: number
@@ -162,6 +179,9 @@ export interface Overview {
     readonly turns: number
     readonly requests: number
     readonly toolRuns: number
+    readonly activeMs: number
+    readonly shellRuns: number
+    readonly shellFailures: number
   }
   readonly week: readonly DayBucket[]
   readonly heatmap: readonly { readonly day: string; readonly tokens: number; readonly requests: number }[]
@@ -169,6 +189,8 @@ export interface Overview {
   readonly tools: readonly Tally[]
   readonly skills: readonly Tally[]
   readonly commands: readonly Tally[]
+  /** Folders by billed tokens in range; sessions without a folder are left out. */
+  readonly workspaces: readonly WorkspaceTally[]
   readonly sessions: readonly SessionCard[]
   readonly sessionsTruncated: number
 }

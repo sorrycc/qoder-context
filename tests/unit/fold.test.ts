@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { commandOutcome, commandPrograms, RIBBON_SLICES, SessionFold } from "../../src/node/fold.js"
+import { commandOutcome, commandPrograms, editLines, RIBBON_SLICES, SessionFold } from "../../src/node/fold.js"
 import { assistant, at, human, toolResult, toolUse } from "./fixtures.js"
 
 function fold(entries: unknown[], subagents: unknown[][] = []) {
@@ -69,7 +69,7 @@ describe("SessionFold", () => {
     expect(Object.fromEntries(summary.commands.map((tally) => [tally.name, tally.count]))).toEqual({ npm: 1, tee: 1 })
     expect(summary.skills.map((tally) => tally.name).sort()).toEqual(["deploy", "review"])
     expect(session.detail().files).toEqual([
-      { path: "/work/demo/a.ts", reads: 1, writes: 1, lastAt: Date.parse(at(3)) },
+      { path: "/work/demo/a.ts", reads: 1, writes: 1, added: 0, removed: 0, lastAt: Date.parse(at(3)) },
     ])
     expect(session.detail().requests.map((request) => request.tools)).toEqual([["Bash", "Read"], ["Edit", "Skill"]])
   })
@@ -159,6 +159,20 @@ describe("command runs", () => {
     expect(commandOutcome({ kind: "completed", exitCode: 0 }, false)).toEqual({ status: "ok", exitCode: 0 })
   })
 
+  it("counts finished runs and failures on the day each run started", () => {
+    const days = fold([
+      human("go", 0),
+      assistant("m1", 1, [toolUse("t1", "Bash", { command: "npm test" }), toolUse("t2", "Bash", { command: "ls" }), toolUse("t3", "Bash", { command: "npm run dev" })], {
+        input_tokens: 10,
+        output_tokens: 1,
+      }),
+      { ...toolResult("t1", 2, true), toolUseResult: { kind: "completed", exitCode: 1 } },
+      { ...toolResult("t2", 2), toolUseResult: { kind: "completed", exitCode: 0 } },
+      { ...toolResult("t3", 2), toolUseResult: { kind: "backgrounded", taskId: "b" } },
+    ]).summary().days
+    expect(days).toMatchObject([{ shellRuns: 2, shellFailures: 1 }])
+  })
+
   it("marks subagent runs and gives them no main request", () => {
     const detail = fold([human("go", 0)], [[assistant("s1", 1, [toolUse("t1", "Bash", { command: "ls" })], { input_tokens: 5 }, { isSidechain: true }), toolResult("t1", 2)]]).detail()
     expect(detail.commands).toMatchObject([{ command: "ls", status: "ok", subagent: true, requestIndex: null }])
@@ -205,10 +219,51 @@ describe("timing", () => {
     expect(ribbon.every((cell) => cell.model > 0)).toBe(true)
   })
 
+  it("adds active time to the day its spans start", () => {
+    const summary = fold([
+      human("go", 0),
+      assistant("m1", 1, [toolUse("t1", "Bash", { command: "ls" })], { input_tokens: 10, output_tokens: 1 }),
+      toolResult("t1", 3),
+      assistant("m2", 4, [], { input_tokens: 20, output_tokens: 1 }),
+    ]).summary()
+    // model 0→1 and 3→4, tools 1→3
+    expect(summary.days).toMatchObject([{ activeMs: 4 * 60_000 }])
+  })
+
   it("leaves the timing empty without timestamps", () => {
     const session = new SessionFold("s")
     session.add({ type: "assistant", message: { id: "m", usage: { input_tokens: 1 } } })
     expect(session.detail().timing).toEqual({ modelMs: 0, toolMs: 0, compactMs: 0, timedOutput: 0, ribbon: [] })
+  })
+})
+
+describe("editLines", () => {
+  it("counts only the lines an edit changes", () => {
+    expect(editLines("Edit", { old_string: "a\nb\nc", new_string: "a\nB\nB2\nc" })).toEqual({ added: 2, removed: 1 })
+    expect(editLines("Edit", { old_string: "x", new_string: "" })).toEqual({ added: 0, removed: 1 })
+  })
+
+  it("sums MultiEdit edits and counts a whole-file write as added", () => {
+    expect(
+      editLines("MultiEdit", {
+        edits: [
+          { old_string: "a", new_string: "b" },
+          { old_string: "c", new_string: "c\nd" },
+        ],
+      }),
+    ).toEqual({ added: 2, removed: 1 })
+    expect(editLines("Write", { content: "one\ntwo\n" })).toEqual({ added: 2, removed: 0 })
+    expect(editLines("Write", {})).toEqual({ added: 0, removed: 0 })
+  })
+
+  it("adds an edit's lines to its file's activity", () => {
+    const files = fold([
+      human("go", 0),
+      assistant("m1", 1, [toolUse("t1", "Edit", { file_path: "/a", old_string: "x", new_string: "y\nz" }), toolUse("t2", "Write", { file_path: "/a", content: "q" })], {
+        input_tokens: 10,
+      }),
+    ]).detail().files
+    expect(files).toMatchObject([{ path: "/a", writes: 2, added: 3, removed: 1 }])
   })
 })
 

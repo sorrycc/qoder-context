@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { widthClass } from "../../src/browser/host.js"
-import { groupSessions, highlight, searchTerms, visibleSessions, type Filter } from "../../src/browser/lists.js"
+import { groupSessions, highlight, pageGroups, searchTerms, visibleSessions, type Filter } from "../../src/browser/lists.js"
 import type { SessionCard } from "../../src/shared/types.js"
 
 const noon = new Date(2026, 10, 18, 12).getTime()
@@ -28,7 +28,7 @@ function card(id: string, overrides: Partial<SessionCard> = {}): SessionCard {
   }
 }
 
-const none: Filter = { day: null, tally: null, query: "" }
+const none: Filter = { day: null, tally: null, workspace: null, query: "" }
 
 describe("visibleSessions", () => {
   const sessions = [
@@ -49,6 +49,7 @@ describe("visibleSessions", () => {
     expect(visibleSessions(sessions, { ...none, query: "  WEB " }, "recent").map((s) => s.id)).toEqual(["a", "c"])
     expect(visibleSessions(sessions, { ...none, query: "web login" }, "recent").map((s) => s.id)).toEqual(["a"])
     expect(visibleSessions(sessions, { ...none, query: "docs web" }, "recent")).toEqual([])
+    expect(visibleSessions(sessions, { ...none, workspace: "/Users/me/web" }, "tokens").map((s) => s.id)).toEqual(["c", "a"])
   })
 })
 
@@ -80,7 +81,7 @@ describe("groupSessions", () => {
       card("c", { lastAt: noon - 24 * HOUR }),
       card("d", { lastAt: noon - 72 * HOUR }),
     ]
-    const groups = groupSessions(sessions, "recent", noon)
+    const groups = groupSessions(sessions, "recent", "date", noon)
     expect(groups.map((group) => [group.label, group.sessions.map((s) => s.id)])).toEqual([
       [{ kind: "today" }, ["a", "b"]],
       [{ kind: "yesterday" }, ["c"]],
@@ -91,8 +92,25 @@ describe("groupSessions", () => {
 
   it("keeps other sorts as one unlabelled group", () => {
     const sessions = [card("a", { lastAt: noon - 72 * HOUR }), card("b")]
-    expect(groupSessions(sessions, "tokens", noon)).toEqual([{ key: "all", label: null, sessions, tokens: 0 }])
-    expect(groupSessions([], "tokens", noon)).toEqual([])
+    expect(groupSessions(sessions, "tokens", "date", noon)).toEqual([{ key: "all", label: null, sessions, count: 2, tokens: 0 }])
+    expect(groupSessions([], "tokens", "date", noon)).toEqual([])
+  })
+
+  it("groups by folder in the order the sort first reaches each, folderless sessions last", () => {
+    const sessions = [card("a", { cwd: null, tokens: 1 }), card("b", { cwd: "/w", tokens: 2 }), card("c", { cwd: "/v" }), card("d", { cwd: "/w", tokens: 3 })]
+    const groups = groupSessions(sessions, "tokens", "workspace", noon)
+    expect(groups.map((group) => [group.label, group.sessions.map((s) => s.id), group.tokens])).toEqual([
+      [{ kind: "workspace", path: "/w" }, ["b", "d"], 5],
+      [{ kind: "workspace", path: "/v" }, ["c"], 0],
+      [{ kind: "workspace", path: null }, ["a"], 1],
+    ])
+  })
+
+  it("pages across groups while keeping whole-group counts", () => {
+    const sessions = [card("a", { cwd: "/w" }), card("b", { cwd: "/w" }), card("c", { cwd: "/v" })]
+    const page = pageGroups(groupSessions(sessions, "recent", "workspace", noon), 1)
+    expect(page.map((group) => [group.sessions.map((s) => s.id), group.count])).toEqual([[["a"], 2]])
+    expect(pageGroups(groupSessions(sessions, "recent", "workspace", noon), 3)).toHaveLength(2)
   })
 })
 
