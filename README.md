@@ -7,10 +7,13 @@ A Qoder Desktop App Plugin for context and token insight, in the spirit of
   (sessions, billed tokens, cache-hit rate, turns, requests, tool runs), a 7-day usage chart, an
   8-week activity heatmap, the token composition, tool/skill/command tallies, and searchable session
   cards that open the session in Qoder. Clicking a heatmap day or a tally filters the cards.
-- **Context** (per conversation, in the Task Monitor's "Context" section): turn/request/token/cache
-  stats, the current context against the model window, a per-request stacked trend with compaction
-  markers, context events (compactions, retries, errors), file activity, tools and commands.
-  It refreshes every 15 s while visible.
+- **Context** (per conversation, in the Task Monitor's "Context" section): a context ring against
+  the model window with headroom, cached/uncached split and an estimate of how many requests still fit
+  at the recent growth rate; turn/request/token/cache stats; a per-request stacked trend with
+  compaction markers; a timeline of context events (compactions, retries, errors, repeats folded);
+  file activity split into reads and writes; tools and commands. Rows show details on hover or focus.
+  It refreshes every 15 s while visible; a poll for an unchanged transcript returns early without
+  re-reading it, and only numbers that changed animate.
 - Charts show a tooltip on hover. Focus a chart (Tab) and use the arrow keys, Home and End to
   step through days or requests; in the heatmap, Up/Down move by day, Left/Right by week, and Enter
   filters by the focused day.

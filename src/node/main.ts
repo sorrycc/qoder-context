@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { formatTokens } from "../shared/format.js"
 import { SERVICE_NAME, type Range, type SessionSummary } from "../shared/types.js"
 import { OverviewIndex } from "./overview.js"
+import { SessionDetails } from "./session.js"
 import { describe, foldTranscript, isSessionId, resolveProjectsRoot, TranscriptLocator } from "./transcripts.js"
 
 const RANGES: readonly Range[] = ["today", "7d", "30d"]
@@ -17,6 +18,7 @@ export const activate: Activate = (context) => {
       data: { error: error instanceof Error ? error.name : "unknown" },
     })
   const index = new OverviewIndex(locator, join(context.storagePath, "overview-cache.json"), report)
+  const details = new SessionDetails(locator)
 
   const summaryFor = async (sessionId: string): Promise<SessionSummary | null> => {
     const file = await locator.find(sessionId)
@@ -33,13 +35,8 @@ export const activate: Activate = (context) => {
           const range = RANGES.find((candidate) => candidate === input.range) ?? "7d"
           return json(await index.overview(range))
         },
-        session: async (input, serviceContext) => {
-          const sessionId = serviceContext.sessionResource?.sessionId ?? input.sessionId
-          if (!isSessionId(sessionId)) return { status: "unbound" }
-          const file = await locator.find(sessionId)
-          if (!file) return { status: "missing", sessionId }
-          return json({ status: "ok", detail: (await foldTranscript(file, sessionId)).detail() })
-        },
+        session: async (input, serviceContext) =>
+          json(await details.load(serviceContext.sessionResource?.sessionId ?? input.sessionId, input.version)),
       },
     }),
     context.api.sessionResources.registerProvider("context", {

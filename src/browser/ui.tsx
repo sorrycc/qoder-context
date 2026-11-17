@@ -182,6 +182,57 @@ export function Collapse({ open, children }: { readonly open: boolean; readonly 
   )
 }
 
+/**
+ * A list that shows its first `cap` items and folds the rest behind a "show all" toggle that
+ * animates open. `forceOpen` keeps it open, e.g. while a selected item sits past the cap.
+ */
+export function CappedList<T>({
+  items,
+  cap,
+  className,
+  render,
+  showAll,
+  showLess,
+  forceOpen = false,
+}: {
+  readonly items: readonly T[]
+  readonly cap: number
+  readonly className: string
+  readonly render: (item: T, position: number) => ReactNode
+  readonly showAll: string
+  readonly showLess: string
+  readonly forceOpen?: boolean
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const open = expanded || forceOpen
+  return (
+    <>
+      <ul className={className}>{items.slice(0, cap).map(render)}</ul>
+      {items.length > cap ? (
+        <>
+          <Collapse open={open}>
+            <ul className={className}>{items.slice(cap).map((item, offset) => render(item, cap + offset))}</ul>
+          </Collapse>
+          <button type="button" className="qc-more" aria-expanded={open} disabled={forceOpen} onClick={() => setExpanded(!open)}>
+            {open ? showLess : showAll}
+            <Icon name="chevron" size={12} />
+          </button>
+        </>
+      ) : null}
+    </>
+  )
+}
+
+/** The current time, ticking every `ms` so relative times stay fresh. */
+export function useNow(ms: number): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), ms)
+    return () => clearInterval(timer)
+  }, [ms])
+  return now
+}
+
 /** `value`, settled for `ms` before it updates. */
 export function useDebounced<T>(value: T, ms: number): T {
   const [settled, setSettled] = useState(value)
@@ -200,6 +251,14 @@ const ICONS = {
   terminal: "M2.5 3.5h11v9h-11zM5 6.5l2 1.5-2 1.5M8.5 10H11",
   inbox: "M2 9l1.8-5.5h8.4L14 9v3.5H2zM2 9h3.5l1 1.5h3l1-1.5H14",
   chevron: "M4.5 6.5L8 10l3.5-3.5",
+  refresh: "M13 8A5 5 0 1 1 11.5 4.5M12.2 2.2V5H9.4",
+  scissors: "M6.3 4.5a1.8 1.8 0 1 1-3.6 0a1.8 1.8 0 1 1 3.6 0zM6.3 11.5a1.8 1.8 0 1 1-3.6 0a1.8 1.8 0 1 1 3.6 0zM6 5.6l7.5 6M6 10.4l7.5-6",
+  alert: "M8 2.2l6.2 11H1.8zM8 6.5v3M8 11.4v.1",
+  folder: "M2 4h4l1.5 1.5H14v7H2z",
+  branch: "M5 2.5v11M12.5 5a1.5 1.5 0 1 1-3 0a1.5 1.5 0 1 1 3 0zM11 6.5c0 3-6 2.5-6 5",
+  chip: "M4.5 4.5h7v7h-7zM6.5 2v2.5M9.5 2v2.5M6.5 11.5V14M9.5 11.5V14M2 6.5h2.5M2 9.5h2.5M11.5 6.5H14M11.5 9.5H14",
+  file: "M4 1.8h5l3 3v9.4H4zM9 1.8v3h3",
+  gauge: "M2.5 11a5.5 5.5 0 1 1 11 0M8 11l2.5-3.5",
 } as const
 
 export type IconName = keyof typeof ICONS

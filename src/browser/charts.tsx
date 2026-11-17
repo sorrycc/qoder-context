@@ -1,9 +1,9 @@
-import { memo, useEffect, useMemo, useRef, useState, type PointerEvent } from "react"
+import { memo, useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react"
 import { localDay } from "../shared/days.js"
 import { formatPercent, formatTokens } from "../shared/format.js"
 import type { ContextEvent, DayBucket, RequestPoint } from "../shared/types.js"
 import { formatDuration, type Translate } from "./i18n.js"
-import { enter } from "./motion.js"
+import { enter, useTweenedNumber } from "./motion.js"
 import { TipBody, Tooltip, useChartTip } from "./tooltip.js"
 
 export const SERIES = {
@@ -307,6 +307,90 @@ export function Donut({
           ))}
         </ul>
       </div>
+    </div>
+  )
+}
+
+/**
+ * Dash pattern and offset for consecutive ring arcs, `values` sized against `scale` (anything past a
+ * full turn is dropped) and separated by `gap` where more than one is drawn.
+ */
+export function ringArcs(values: readonly number[], scale: number, circumference: number, gap = 2) {
+  const lengths = values.map((value) => (scale > 0 ? (Math.max(0, value) / scale) * circumference : 0))
+  const gaps = lengths.filter((length) => length > gap).length > 1 ? gap : 0
+  let start = 0
+  return lengths.map((length) => {
+    const drawn = Math.max(0, Math.min(length, circumference - start) - gaps)
+    const arc = { dash: `${drawn} ${circumference - drawn}`, offset: -start, drawn }
+    start = Math.min(circumference, start + length)
+    return arc
+  })
+}
+
+const RING = { size: 132, stroke: 12, warn: 0.8 } as const
+
+/**
+ * Context fill as a ring: cached then uncached prompt against `scale` (the model window), easing
+ * between refreshes and sweeping in on mount. A tick marks the 80% warning line; the centre holds
+ * whatever the caller passes.
+ */
+export function ContextRing({
+  cached,
+  uncached,
+  scale,
+  label,
+  warn,
+  children,
+}: {
+  readonly cached: number
+  readonly uncached: number
+  readonly scale: number
+  readonly label: string
+  readonly warn: boolean
+  readonly children: ReactNode
+}) {
+  const shownCached = useTweenedNumber(cached)
+  const shownUncached = useTweenedNumber(uncached)
+  const centre = RING.size / 2
+  const radius = (RING.size - RING.stroke) / 2
+  const circumference = 2 * Math.PI * radius
+  const arcs = ringArcs([shownCached, shownUncached], scale, circumference)
+  const tick = (RING.warn * 360 - 90) * (Math.PI / 180)
+  const inner = radius - RING.stroke / 2 - 2
+  const outer = radius + RING.stroke / 2 + 2
+  return (
+    <div className="qc-ring">
+      <svg viewBox={`0 0 ${RING.size} ${RING.size}`} role="img" aria-label={label}>
+        <circle className="qc-ring-track" cx={centre} cy={centre} r={radius} strokeWidth={RING.stroke} />
+        {[SERIES.cacheRead, SERIES.uncached].map((color, index) => {
+          const arc = arcs[index]
+          return arc && arc.drawn > 0 ? (
+            <circle
+              key={color}
+              cx={centre}
+              cy={centre}
+              r={radius}
+              fill="none"
+              stroke={color}
+              strokeWidth={RING.stroke}
+              strokeDasharray={arc.dash}
+              strokeDashoffset={arc.offset}
+              transform={`rotate(-90 ${centre} ${centre})`}
+            />
+          ) : null
+        })}
+        {scale > 0 ? (
+          <line
+            className="qc-ring-tick"
+            data-warn={warn || undefined}
+            x1={centre + Math.cos(tick) * inner}
+            y1={centre + Math.sin(tick) * inner}
+            x2={centre + Math.cos(tick) * outer}
+            y2={centre + Math.sin(tick) * outer}
+          />
+        ) : null}
+      </svg>
+      <div className="qc-ring-centre">{children}</div>
     </div>
   )
 }

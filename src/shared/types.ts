@@ -86,6 +86,12 @@ export interface SessionDetail {
   readonly files: readonly FileActivity[]
 }
 
+/** `version` identifies the transcript state; pass it back to get `unchanged` until it moves. */
+export type SessionResponse =
+  | { readonly status: "ok"; readonly version: string; readonly detail: SessionDetail }
+  | { readonly status: "unchanged"; readonly version: string }
+  | { readonly status: "missing" | "unbound" }
+
 export interface SessionCard {
   readonly id: string
   readonly title: string | null

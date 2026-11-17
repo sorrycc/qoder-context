@@ -21,8 +21,8 @@ import {
 import { enter } from "./motion.js"
 import { TipBody, Tooltip, useChartTip, useHoverTip } from "./tooltip.js"
 import {
+  CappedList,
   Card,
-  Collapse,
   EmptyState,
   formatCount,
   Icon,
@@ -313,11 +313,8 @@ function TallyCard({
 }) {
   const tip = useChartTip()
   const hover = useHoverTip(tip, 120)
-  const [expanded, setExpanded] = useState(false)
   const max = Math.max(1, ...tallies.map((tally) => tally.count))
   const selected = filter.tally?.kind === kind ? tallies.findIndex((tally) => tally.name === filter.tally?.name) : -1
-  // Keep a selected row that sits past the cap in view.
-  const open = expanded || selected >= TALLY_CAP
   const active = tip.active === null ? undefined : tallies[tip.active]
   const row = (tally: Tally, position: number) => {
     const pressed = position === selected
@@ -339,18 +336,16 @@ function TallyCard({
         <EmptyState compact icon={empty.icon} title={empty.title} hint={empty.hint} />
       ) : (
         <div className="qc-tip-host" ref={tip.hostRef} {...hover}>
-          <ul className="qc-tally">{tallies.slice(0, TALLY_CAP).map(row)}</ul>
-          {tallies.length > TALLY_CAP ? (
-            <>
-              <Collapse open={open}>
-                <ul className="qc-tally">{tallies.slice(TALLY_CAP).map((tally, offset) => row(tally, TALLY_CAP + offset))}</ul>
-              </Collapse>
-              <button type="button" className="qc-more" aria-expanded={open} disabled={selected >= TALLY_CAP} onClick={() => setExpanded(!open)}>
-                {open ? t("showLess") : t("showAll", { count: tallies.length })}
-                <Icon name="chevron" size={12} />
-              </button>
-            </>
-          ) : null}
+          <CappedList
+            className="qc-tally"
+            items={tallies}
+            cap={TALLY_CAP}
+            render={row}
+            showAll={t("showAll", { count: tallies.length })}
+            showLess={t("showLess")}
+            // Keep a selected row that sits past the cap in view.
+            forceOpen={selected >= TALLY_CAP}
+          />
           <Tooltip tip={tip}>
             {active ? (
               <TipBody
