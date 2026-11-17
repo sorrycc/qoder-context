@@ -17,7 +17,7 @@ function dateOf(day: string): Date {
   return new Date(year ?? 1970, (month ?? 1) - 1, date ?? 1)
 }
 
-function longDate(day: string, locale: string): string {
+export function longDate(day: string, locale: string): string {
   return dateOf(day).toLocaleDateString(locale, { weekday: "short", month: "short", day: "numeric" })
 }
 
@@ -252,60 +252,61 @@ export function Donut({
   let offset = 0
   const focus = active === null ? undefined : parts[active]
   return (
-    <div className="qc-donut" data-active={active !== null || undefined} onPointerLeave={() => setActive(null)}>
-      <svg viewBox="0 0 104 104" role="img" aria-label={t("compositionTitle")}>
-        <circle cx={52} cy={52} r={radius} fill="none" stroke="var(--qc-fill-2)" strokeWidth={14} />
-        {total > 0
-          ? parts.map((part, index) => {
-              const length = (part.value / total) * circumference
-              const drawn = Math.max(0, length - gap)
-              const segment = (
-                <circle
-                  key={part.label}
-                  className="qc-donut-seg"
-                  data-active={active === index || undefined}
-                  cx={52}
-                  cy={52}
-                  r={radius}
-                  fill="none"
-                  stroke={part.color}
-                  strokeWidth={14}
-                  style={{ strokeDasharray: `${drawn} ${circumference - drawn}`, strokeDashoffset: -(offset + gap / 2) }}
-                  transform="rotate(-90 52 52)"
-                  onPointerEnter={() => setActive(index)}
-                />
-              )
-              offset += length
-              return segment
-            })
-          : null}
-        <text className="qc-donut-value" x={52} y={focus ? 53 : 56} textAnchor="middle">
-          {focus ? formatPercent(total > 0 ? focus.value / total : null, 0) : formatTokens(total)}
-        </text>
-        {focus ? (
-          <text className="qc-donut-caption" x={52} y={66} textAnchor="middle">
-            {formatTokens(focus.value)}
+    <div className="qc-donut-wrap">
+      <div className="qc-donut" data-active={active !== null || undefined} onPointerLeave={() => setActive(null)}>
+        <svg viewBox="0 0 104 104" role="img" aria-label={t("compositionTitle")}>
+          <circle cx={52} cy={52} r={radius} fill="none" stroke="var(--qc-fill-2)" strokeWidth={14} />
+          {total > 0
+            ? parts.map((part, index) => {
+                const length = (part.value / total) * circumference
+                const drawn = Math.max(0, length - gap)
+                const segment = (
+                  <circle
+                    key={part.label}
+                    className="qc-donut-seg"
+                    data-active={active === index || undefined}
+                    cx={52}
+                    cy={52}
+                    r={radius}
+                    fill="none"
+                    stroke={part.color}
+                    strokeWidth={14}
+                    style={{ strokeDasharray: `${drawn} ${circumference - drawn}`, strokeDashoffset: -(offset + gap / 2) }}
+                    transform="rotate(-90 52 52)"
+                    onPointerEnter={() => setActive(index)}
+                  />
+                )
+                offset += length
+                return segment
+              })
+            : null}
+          <text className="qc-donut-value" x={52} y={focus ? 53 : 56} textAnchor="middle">
+            {focus ? formatPercent(total > 0 ? focus.value / total : null, 0) : formatTokens(total)}
           </text>
-        ) : null}
-      </svg>
-      <ul className="qc-donut-legend">
-        {parts.map((part, index) => (
-          <li
-            key={part.label}
-            tabIndex={0}
-            data-active={active === index || undefined}
-            onPointerEnter={() => setActive(index)}
-            onFocus={() => setActive(index)}
-            onBlur={() => setActive(null)}
-          >
-            <i className="qc-swatch" style={{ background: part.color }} />
-            <span>{part.label}</span>
-            <span className="qc-count">
-              {formatTokens(part.value)} · {formatPercent(total > 0 ? part.value / total : null, 0)}
-            </span>
-          </li>
-        ))}
-      </ul>
+          {focus ? (
+            <text className="qc-donut-caption" x={52} y={66} textAnchor="middle">
+              {formatTokens(focus.value)}
+            </text>
+          ) : null}
+        </svg>
+        <ul className="qc-donut-legend">
+          {parts.map((part, index) => (
+            <li
+              key={part.label}
+              tabIndex={0}
+              data-active={active === index || undefined}
+              onPointerEnter={() => setActive(index)}
+              onFocus={() => setActive(index)}
+              onBlur={() => setActive(null)}
+            >
+              <i className="qc-swatch" style={{ background: part.color }} />
+              <span className="qc-name">{part.label}</span>
+              <span className="qc-donut-tokens">{formatTokens(part.value)}</span>
+              <span className="qc-donut-pct">{formatPercent(total > 0 ? part.value / total : null, 0)}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   )
 }

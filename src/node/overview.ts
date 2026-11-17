@@ -8,7 +8,7 @@ export const HEATMAP_DAYS = 56
 const CACHE_VERSION = 4
 const CACHE_ENTRY_LIMIT = 3_000
 const SESSION_CARD_LIMIT = 300
-const TALLY_LIMIT = 12
+const TALLY_LIMIT = 24
 const FOLD_CONCURRENCY = 4
 
 interface CacheEntry {

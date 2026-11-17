@@ -19,6 +19,7 @@ export function registerView(render: Render, options: { readonly compact?: boole
       host.className = options.compact ? "qc-root qc-compact" : "qc-root"
       container.append(style, host)
       const stopPalette = syncPalette(container, host)
+      const stopWidth = watchWidth(host)
       const root = createRoot(host)
       const update = (locale: string) => root.render(render(context, createTranslate(locale)))
       mounted.add(update)
@@ -26,6 +27,7 @@ export function registerView(render: Render, options: { readonly compact?: boole
       return {
         dispose() {
           stopPalette()
+          stopWidth()
           mounted.delete(update)
           root.unmount()
           style.remove()
@@ -56,6 +58,23 @@ function syncPalette(container: HTMLElement, target: HTMLElement): () => void {
   const observer = new MutationObserver(() => requestAnimationFrame(apply))
   observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme", "style"] })
   if (document.body) observer.observe(document.body, { attributes: true, attributeFilter: ["class", "data-theme", "style"] })
+  return () => observer.disconnect()
+}
+
+/** The width class host.tsx tags the root with; styles.ts keys narrow and wide layouts off it. */
+export function widthClass(width: number): "narrow" | "regular" | "wide" {
+  return width < 520 ? "narrow" : width >= 1200 ? "wide" : "regular"
+}
+
+function watchWidth(target: HTMLElement): () => void {
+  const apply = (width: number) => {
+    const next = widthClass(width)
+    if (target.dataset.qcWidth !== next) target.dataset.qcWidth = next
+  }
+  apply(target.clientWidth)
+  if (typeof ResizeObserver === "undefined") return () => {}
+  const observer = new ResizeObserver(() => apply(target.clientWidth))
+  observer.observe(target)
   return () => observer.disconnect()
 }
 

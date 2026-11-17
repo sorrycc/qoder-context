@@ -1,4 +1,4 @@
-import { useCallback, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react"
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type PointerEvent, type ReactNode, type RefObject } from "react"
 
 /** Where a chart item sits, in the tooltip host's coordinates. */
 export interface Anchor {
@@ -108,6 +108,47 @@ export function useChartTip(): ChartTip {
   )
 
   return { hostRef, active: state.index, show, hide, keyboard, id, anchor: state.anchor, open: state.index !== null }
+}
+
+/** The `data-qc-tip` index of the item an event came from, or null. */
+function tipIndexOf(target: EventTarget | null): number | null {
+  const item = target instanceof Element ? target.closest("[data-qc-tip]") : null
+  return item ? Number(item.getAttribute("data-qc-tip")) : null
+}
+
+/**
+ * Delegated hover/focus handlers for a list of `[data-qc-tip]` items, spread onto their container.
+ * A resting pointer opens the tooltip after `delayMs`; once open it follows the pointer from item to
+ * item at once, and crossing a gap between items doesn't close it. Keyboard focus opens it at once.
+ */
+export function useHoverTip(tip: ChartTip, delayMs: number) {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const openRef = useRef(tip.open)
+  openRef.current = tip.open
+  const { show, hide } = tip
+  useEffect(() => () => clearTimeout(timer.current ?? undefined), [])
+
+  return useMemo(() => {
+    const schedule = (index: number | null) => {
+      clearTimeout(timer.current ?? undefined)
+      if (index === null) timer.current = setTimeout(hide, 80)
+      else if (openRef.current) show(index)
+      else timer.current = setTimeout(() => show(index), delayMs)
+    }
+    return {
+      onPointerOver: (event: PointerEvent) => schedule(tipIndexOf(event.target)),
+      onPointerLeave: () => schedule(null),
+      onFocus: (event: FocusEvent) => {
+        const index = tipIndexOf(event.target)
+        clearTimeout(timer.current ?? undefined)
+        if (index !== null) show(index)
+      },
+      onBlur: () => {
+        clearTimeout(timer.current ?? undefined)
+        hide()
+      },
+    }
+  }, [delayMs, hide, show])
 }
 
 /**
