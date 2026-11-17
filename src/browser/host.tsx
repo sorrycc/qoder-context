@@ -7,8 +7,9 @@ import { STYLES } from "./styles.js"
 
 type Render = (context: PluginViewContext, t: Translate) => ReactNode
 
-/** Registers a React view rendered with the host locale. */
+/** Registers a React view and re-renders it in place when the host switches language. */
 export function registerView(render: Render, options: { readonly compact?: boolean } = {}): void {
+  const mounted = new Set<(locale: string) => void>()
   globalThis.qoderPluginView.register({
     mount(container, context) {
       const style = document.createElement("style")
@@ -18,15 +19,21 @@ export function registerView(render: Render, options: { readonly compact?: boole
       container.append(style, host)
       const stopPalette = syncPalette(container, host)
       const root = createRoot(host)
-      root.render(render(context, createTranslate(context.locale)))
+      const update = (locale: string) => root.render(render(context, createTranslate(locale)))
+      mounted.add(update)
+      update(context.locale)
       return {
         dispose() {
           stopPalette()
+          mounted.delete(update)
           root.unmount()
           style.remove()
           host.remove()
         },
       }
+    },
+    updateLocale(locale) {
+      for (const update of mounted) update(locale)
     },
   })
 }
