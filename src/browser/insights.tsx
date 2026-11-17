@@ -6,6 +6,8 @@ import { SERVICE_NAME, type Overview, type Range, type SessionCard, type Tally }
 import { Donut, Heatmap, MiniStack, SERIES, WeekBars } from "./charts.js"
 import { registerView, useLoad } from "./host.js"
 import { relativeTime, type MessageKey, type Translate } from "./i18n.js"
+import { enter } from "./motion.js"
+import { Card, formatCount, Kpi, KpiSkeletons, Skeleton, Spinner } from "./ui.js"
 
 type Sort = "recent" | "tokens" | "context"
 type TallyKind = "tools" | "skills" | "commands"
@@ -47,7 +49,10 @@ function Insights({ context, t }: { readonly context: PluginViewContext; readonl
             ))}
           </div>
           <Button variant="secondary" size="sm" disabled={overview.loading} onClick={overview.reload}>
-            {overview.loading && data ? t("loading") : t("refresh")}
+            <span className="qc-button-label">
+              {overview.loading && data ? <Spinner /> : null}
+              {overview.loading && data ? t("loading") : t("refresh")}
+            </span>
           </Button>
         </div>
       </header>
@@ -70,14 +75,15 @@ function Insights({ context, t }: { readonly context: PluginViewContext; readonl
 function Placeholder() {
   return (
     <>
-      <div className="qc-grid qc-kpis">
-        {Array.from({ length: 6 }, (_, index) => (
-          <div key={index} className="qc-skeleton" style={{ height: 72 }} />
-        ))}
-      </div>
+      <KpiSkeletons count={6} />
       <div className="qc-grid qc-two">
-        <div className="qc-skeleton" style={{ height: 180 }} />
-        <div className="qc-skeleton" style={{ height: 180 }} />
+        <Skeleton height={190} />
+        <Skeleton height={190} />
+      </div>
+      <div className="qc-grid qc-four">
+        {Array.from({ length: 4 }, (_, index) => (
+          <Skeleton key={index} height={160} />
+        ))}
       </div>
     </>
   )
@@ -101,29 +107,23 @@ function Dashboard({ context, data, t }: { readonly context: PluginViewContext; 
   return (
     <>
       <div className="qc-grid qc-kpis">
-        <Kpi label={t("kpiSessions")} value={String(data.kpi.sessions)} />
-        <Kpi label={t("kpiTokens")} value={formatTokens(data.kpi.tokens)} />
-        <Kpi label={t("kpiCacheHit")} value={formatPercent(data.kpi.cacheHitRate)} />
-        <Kpi label={t("kpiTurns")} value={String(data.kpi.turns)} />
-        <Kpi label={t("kpiRequests")} value={String(data.kpi.requests)} />
-        <Kpi label={t("kpiToolRuns")} value={String(data.kpi.toolRuns)} />
+        <Kpi index={0} label={t("kpiSessions")} value={data.kpi.sessions} format={formatCount} />
+        <Kpi index={1} label={t("kpiTokens")} value={data.kpi.tokens} format={formatTokenValue} tone="accent" />
+        <Kpi index={2} label={t("kpiCacheHit")} value={data.kpi.cacheHitRate} format={formatRatio} tone="success" />
+        <Kpi index={3} label={t("kpiTurns")} value={data.kpi.turns} format={formatCount} />
+        <Kpi index={4} label={t("kpiRequests")} value={data.kpi.requests} format={formatCount} />
+        <Kpi index={5} label={t("kpiToolRuns")} value={data.kpi.toolRuns} format={formatCount} />
       </div>
       <div className="qc-grid qc-two">
-        <section className="qc-card">
-          <h2>{t("weekTitle")}</h2>
+        <Card index={6} title={t("weekTitle")}>
           <WeekBars days={data.week} locale={context.locale} />
-        </section>
-        <section className="qc-card">
-          <h2>
-            {t("heatmapTitle")}
-            <small>{t("heatmapHint")}</small>
-          </h2>
+        </Card>
+        <Card index={7} title={t("heatmapTitle")} hint={t("heatmapHint")}>
           <Heatmap cells={data.heatmap} selected={filter.day} onSelect={(day) => setFilter((current) => ({ ...current, day }))} />
-        </section>
+        </Card>
       </div>
       <div className="qc-grid qc-four">
-        <section className="qc-card">
-          <h2>{t("compositionTitle")}</h2>
+        <Card index={8} title={t("compositionTitle")}>
           <Donut
             parts={[
               { label: t("cacheRead"), value: data.composition.cacheRead, color: SERIES.cacheRead },
@@ -131,17 +131,13 @@ function Dashboard({ context, data, t }: { readonly context: PluginViewContext; 
               { label: t("output"), value: data.composition.output, color: SERIES.output },
             ]}
           />
-        </section>
-        <TallyCard title={t("toolsTitle")} kind="tools" tallies={data.tools} filter={filter} onToggle={toggleTally} t={t} />
-        <TallyCard title={t("skillsTitle")} kind="skills" tallies={data.skills} filter={filter} onToggle={toggleTally} t={t} />
-        <TallyCard title={t("commandsTitle")} kind="commands" tallies={data.commands} filter={filter} onToggle={toggleTally} t={t} />
+        </Card>
+        <TallyCard index={9} title={t("toolsTitle")} kind="tools" tallies={data.tools} filter={filter} onToggle={toggleTally} t={t} />
+        <TallyCard index={10} title={t("skillsTitle")} kind="skills" tallies={data.skills} filter={filter} onToggle={toggleTally} t={t} />
+        <TallyCard index={11} title={t("commandsTitle")} kind="commands" tallies={data.commands} filter={filter} onToggle={toggleTally} t={t} />
       </div>
       <p className="qc-note">{t("estimateNote")}</p>
-      <section className="qc-card">
-        <h2>
-          {t("sessionsTitle")}
-          <small>{sessions.length}</small>
-        </h2>
+      <Card index={12} title={t("sessionsTitle")} aside={<span className="qc-badge">{sessions.length}</span>}>
         <div className="qc-toolbar">
           <Input
             value={filter.query}
@@ -169,27 +165,22 @@ function Dashboard({ context, data, t }: { readonly context: PluginViewContext; 
           <div className="qc-empty">{t("noSessions")}</div>
         ) : (
           <div className="qc-sessions">
-            {sessions.map((session) => (
-              <SessionTile key={session.id} session={session} onOpen={open} t={t} />
+            {sessions.map((session, index) => (
+              <SessionTile key={session.id} index={index} session={session} onOpen={open} t={t} />
             ))}
           </div>
         )}
         {data.sessionsTruncated > 0 ? <p className="qc-note">{t("moreSessions", { count: data.sessionsTruncated })}</p> : null}
-      </section>
+      </Card>
     </>
   )
 }
 
-function Kpi({ label, value }: { readonly label: string; readonly value: string }) {
-  return (
-    <div className="qc-card qc-kpi">
-      <div className="qc-kpi-label">{label}</div>
-      <div className="qc-kpi-value">{value}</div>
-    </div>
-  )
-}
+const formatTokenValue = (value: number | null) => formatTokens(value ?? 0)
+const formatRatio = (value: number | null) => formatPercent(value)
 
 function TallyCard({
+  index,
   title,
   kind,
   tallies,
@@ -197,6 +188,7 @@ function TallyCard({
   onToggle,
   t,
 }: {
+  readonly index: number
   readonly title: string
   readonly kind: TallyKind
   readonly tallies: readonly Tally[]
@@ -206,8 +198,7 @@ function TallyCard({
 }) {
   const max = Math.max(1, ...tallies.map((tally) => tally.count))
   return (
-    <section className="qc-card">
-      <h2>{title}</h2>
+    <Card index={index} title={title} hint={tallies.length > 0 ? tallies.length : undefined}>
       {tallies.length === 0 ? (
         <p className="qc-muted">{t("noneYet")}</p>
       ) : (
@@ -228,14 +219,24 @@ function TallyCard({
           ))}
         </ul>
       )}
-    </section>
+    </Card>
   )
 }
 
-function SessionTile({ session, onOpen, t }: { readonly session: SessionCard; readonly onOpen: (id: string) => void; readonly t: Translate }) {
+function SessionTile({
+  index,
+  session,
+  onOpen,
+  t,
+}: {
+  readonly index: number
+  readonly session: SessionCard
+  readonly onOpen: (id: string) => void
+  readonly t: Translate
+}) {
   const share = session.contextWindow ? session.contextTokens / session.contextWindow : null
   return (
-    <button type="button" className="qc-session" onClick={() => onOpen(session.id)} title={session.cwd ?? session.id}>
+    <button type="button" className="qc-session qc-pressable qc-enter" style={enter(index)} onClick={() => onOpen(session.id)} title={session.cwd ?? session.id}>
       <span className="qc-session-title">{session.title ?? t("untitled")}</span>
       {session.cwd ? <span className="qc-session-path">{shortPath(session.cwd)}</span> : null}
       <MiniStack cacheRead={session.cacheRead} prompt={session.prompt} output={session.output} />

@@ -1,6 +1,7 @@
 import { formatPercent, formatTokens } from "../shared/format.js"
 import type { ContextEvent, DayBucket, RequestPoint } from "../shared/types.js"
 import type { Translate } from "./i18n.js"
+import { enter } from "./motion.js"
 
 export const SERIES = {
   cacheRead: "var(--qc-cached)",
@@ -26,17 +27,19 @@ export function WeekBars({ days, locale }: { readonly days: readonly DayBucket[]
         return (
           <g key={day.day}>
             <rect
+              className="qc-bar qc-grow-y"
+              style={enter(index)}
               x={index * slot + slot * 0.2}
               y={height - barHeight}
               width={slot * 0.6}
               height={Math.max(barHeight, day.tokens > 0 ? 2 : 0)}
               rx={3}
-              fill="var(--qc-primary)"
+              fill="var(--qc-accent)"
             >
               <title>{`${day.day} · ${formatTokens(day.tokens)} · ${day.requests} req`}</title>
             </rect>
             {day.tokens > 0 ? (
-              <text x={index * slot + slot / 2} y={height - barHeight - 4} textAnchor="middle">
+              <text className="qc-fade" style={enter(index + 4)} x={index * slot + slot / 2} y={height - barHeight - 4} textAnchor="middle">
                 {formatTokens(day.tokens)}
               </text>
             ) : null}
@@ -72,7 +75,8 @@ export function Heatmap({
         return (
           <rect
             key={cell.day}
-            className="qc-heat-cell"
+            className="qc-heat-cell qc-fade"
+            style={enter(Math.floor(position / 7), 16)}
             x={Math.floor(position / 7) * (size + gap)}
             y={(position % 7) * (size + gap)}
             width={size}
@@ -122,8 +126,7 @@ export function Donut({
                   fill="none"
                   stroke={part.color}
                   strokeWidth={14}
-                  strokeDasharray={`${length} ${circumference - length}`}
-                  strokeDashoffset={-offset}
+                  style={{ strokeDasharray: `${length} ${circumference - length}`, strokeDashoffset: -offset }}
                   transform="rotate(-90 52 52)"
                 >
                   <title>{`${part.label} · ${formatTokens(part.value)}`}</title>
@@ -133,7 +136,7 @@ export function Donut({
               return segment
             })
           : null}
-        <text x={52} y={56} textAnchor="middle" style={{ fontSize: 13, fill: "var(--qc-text)", fontWeight: 600 }}>
+        <text x={52} y={56} textAnchor="middle" style={{ fontSize: "var(--qc-font-md)", fill: "var(--qc-text)", fontWeight: "var(--qc-weight-bold)" }}>
           {formatTokens(total)}
         </text>
       </svg>
@@ -152,16 +155,40 @@ export function Donut({
   )
 }
 
-export function MiniStack({ cacheRead, prompt, output }: { readonly cacheRead: number; readonly prompt: number; readonly output: number }) {
-  const total = prompt + output
-  if (total <= 0) return <div className="qc-stack" />
-  const share = (value: number) => `${(Math.max(0, value) / total) * 100}%`
+/** Horizontal stacked meter; parts are sized against `scale` and sweep in on mount. */
+export function StackBar({
+  parts,
+  scale,
+  large,
+  label,
+}: {
+  readonly parts: readonly { readonly value: number; readonly color: string }[]
+  readonly scale: number
+  readonly large?: boolean
+  readonly label?: string
+}) {
+  const width = (value: number) => `${scale > 0 ? Math.min(100, (Math.max(0, value) / scale) * 100) : 0}%`
   return (
-    <div className="qc-stack">
-      <span style={{ width: share(cacheRead), background: SERIES.cacheRead }} />
-      <span style={{ width: share(prompt - cacheRead), background: SERIES.uncached }} />
-      <span style={{ width: share(output), background: SERIES.output }} />
-    </div>
+    <span className={large ? "qc-meter qc-meter-lg" : "qc-meter"} role={label ? "img" : undefined} aria-label={label}>
+      <span className="qc-meter-fill qc-fill-in">
+        {parts.map((part, index) => (
+          <span key={index} style={{ width: width(part.value), background: part.color }} />
+        ))}
+      </span>
+    </span>
+  )
+}
+
+export function MiniStack({ cacheRead, prompt, output }: { readonly cacheRead: number; readonly prompt: number; readonly output: number }) {
+  return (
+    <StackBar
+      scale={prompt + output}
+      parts={[
+        { value: cacheRead, color: SERIES.cacheRead },
+        { value: prompt - cacheRead, color: SERIES.uncached },
+        { value: output, color: SERIES.output },
+      ]}
+    />
   )
 }
 
@@ -214,7 +241,7 @@ export function RequestTrend({
             .filter(Boolean)
             .join("\n")
           return (
-            <g key={offset + index}>
+            <g key={offset + index} className="qc-bar qc-grow-y">
               <title>{label}</title>
               <rect x={x} y={height - cached} width={bar} height={cached} fill={SERIES.cacheRead} />
               <rect x={x} y={height - cached - uncached} width={bar} height={uncached} fill={SERIES.uncached} />

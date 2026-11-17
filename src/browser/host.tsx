@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { createRoot } from "react-dom/client"
 import { createTranslate, type Translate } from "./i18n.js"
 import { STYLES } from "./styles.js"
+import { schemeOf } from "./theme.js"
 
 type Render = (context: PluginViewContext, t: Translate) => ReactNode
 
@@ -39,13 +40,17 @@ export function registerView(render: Render, options: { readonly compact?: boole
 }
 
 /**
- * Copies the host's computed text and background colours onto the view and follows theme
- * switches; the packaged host hashes its design-token names, so they can't be referenced.
+ * Copies the host's computed text and background colours onto the view, tags it light or dark,
+ * and follows theme switches; the packaged host hashes its design-token names, so they can't be
+ * referenced.
  */
 function syncPalette(container: HTMLElement, target: HTMLElement): () => void {
   const apply = () => {
-    target.style.setProperty("--qc-text", getComputedStyle(container).color)
-    target.style.setProperty("--qc-surface", opaqueBackground(container))
+    const text = getComputedStyle(container).color
+    const surface = opaqueBackground(container)
+    target.style.setProperty("--qc-text", text)
+    target.style.setProperty("--qc-surface", surface)
+    target.dataset.qcScheme = schemeOf(surface, text)
   }
   apply()
   const observer = new MutationObserver(() => requestAnimationFrame(apply))
