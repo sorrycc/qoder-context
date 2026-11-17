@@ -53,7 +53,7 @@ const en = {
   currentTitle: "Current context",
   windowUnknown: "Context window unknown",
   trendTitle: "Per-request context",
-  trendHint: "One bar per model request; ✂ marks a compaction. Hover or use arrow keys for details",
+  trendHint: "One bar per model request; ✂ marks a compaction. Hover for details, click a bar to pin it",
   trendTruncated: "Showing the latest {shown} of {total} requests",
   eventsTitle: "Context events",
   eventsEmpty: "No compactions, retries or errors",
@@ -135,6 +135,69 @@ const en = {
   emptySessionTools: "No tool calls yet",
   emptySessionCommands: "No shell commands yet",
   tallyShare: "Share",
+  trendHintDelta: "Each bar is the prompt's change since the request before; compactions drop below the line",
+  trendModeLabel: "Trend mode",
+  trendTotal: "Total",
+  trendDelta: "Delta",
+  deltaGrowth: "Growth",
+  deltaShrink: "Shrink",
+  deltaChange: "Change",
+  deltaClipped: "Clipped; the drop is larger than shown",
+  latency: "Model time",
+  unpin: "Unpin",
+  pinnedLabel: "Pinned request",
+  showInTrend: "Click to show it in the trend",
+  showRequest: "Show request #{index} in the trend",
+  timingTitle: "Timing",
+  timingHint: "Waits for your input aren't counted",
+  timingActive: "Active time",
+  timingModel: "Model",
+  timingTools: "Tools",
+  timingCompaction: "Compaction",
+  timingModelSub: "{count} requests",
+  timingToolsSub: "{count} tool runs",
+  timingCompactSub: "×{count}",
+  timingRate: "≈{rate} tok/s",
+  timingRateHint: "Output tokens per second of model time. Model time includes reading the prompt and thinking, so this runs below the model's raw speed.",
+  timingRibbon: "Active time, oldest first",
+  timingSlice: "{from} – {to} of active time",
+  timingEmpty: "No timed requests yet",
+  timingEmptyHint: "Timing needs the transcript's timestamps; it appears after the first reply.",
+  runsTitle: "Command executions",
+  runsFilterLabel: "Filter runs",
+  runsAll: "All",
+  runsFailed: "Failed",
+  runsSlow: "Slow",
+  runsBackground: "Background",
+  runsSortLabel: "Sort runs",
+  runsLatest: "Latest",
+  runsSlowest: "Slowest",
+  runsSearch: "Filter commands",
+  runsSummary: "Summary",
+  runsSettled: "Settled",
+  runsFailedRate: "{rate} of settled",
+  runsTotalTime: "Total time",
+  runsBackgroundSub: "returned at once",
+  runsAttention: "Attention",
+  runsSlowestRun: "Slowest",
+  runsLastFailure: "Last failure",
+  runsPrograms: "Programs",
+  runsProgramsHint: "Click to filter the runs",
+  runsNoMatch: "No runs match",
+  runsTruncated: "Latest {shown} of {total}",
+  runsSlowHint: "Slow means {threshold} or longer",
+  runStatus: "Status",
+  runDuration: "Duration",
+  runExit: "exit {code}",
+  runRequest: "Request",
+  runSubagent: "Subagent",
+  runSub: "sub",
+  runBg: "bg",
+  statusOk: "Succeeded",
+  statusFailed: "Failed",
+  statusCancelled: "Cancelled or cut off",
+  statusBackground: "Moved to background",
+  statusRunning: "Running",
 }
 
 type Messages = typeof en
@@ -194,7 +257,7 @@ const zh: Messages = {
   currentTitle: "当前上下文",
   windowUnknown: "上下文窗口未知",
   trendTitle: "逐请求上下文",
-  trendHint: "每根柱子是一次模型请求；✂ 标记压缩。悬停或用方向键查看详情",
+  trendHint: "每根柱子是一次模型请求；✂ 标记压缩。悬停查看详情，点击柱子可固定",
   trendTruncated: "显示最近 {shown} / {total} 次请求",
   eventsTitle: "上下文事件",
   eventsEmpty: "没有压缩、重试或错误",
@@ -276,15 +339,99 @@ const zh: Messages = {
   emptySessionTools: "尚无工具调用",
   emptySessionCommands: "尚无 Shell 命令",
   tallyShare: "占比",
+  trendHintDelta: "每根柱子是输入相对上一次请求的变化；压缩会落到基线以下",
+  trendModeLabel: "趋势模式",
+  trendTotal: "总量",
+  trendDelta: "增量",
+  deltaGrowth: "增长",
+  deltaShrink: "缩减",
+  deltaChange: "变化",
+  deltaClipped: "已截断；实际降幅比图中更大",
+  latency: "模型耗时",
+  unpin: "取消固定",
+  pinnedLabel: "已固定的请求",
+  showInTrend: "点击在趋势图中定位",
+  showRequest: "在趋势图中定位请求 #{index}",
+  timingTitle: "耗时",
+  timingHint: "不计等待你输入的时间",
+  timingActive: "活跃时长",
+  timingModel: "模型",
+  timingTools: "工具",
+  timingCompaction: "压缩",
+  timingModelSub: "{count} 次请求",
+  timingToolsSub: "{count} 次工具调用",
+  timingCompactSub: "×{count}",
+  timingRate: "≈{rate} tok/s",
+  timingRateHint: "按模型耗时计算的每秒输出 Token。模型耗时包含读取输入与思考，因此低于模型的原始速度。",
+  timingRibbon: "活跃时间轴，从早到晚",
+  timingSlice: "活跃时间 {from} – {to}",
+  timingEmpty: "尚无可计时的请求",
+  timingEmptyHint: "耗时依赖会话记录中的时间戳，首次回复后出现。",
+  runsTitle: "命令执行",
+  runsFilterLabel: "筛选执行记录",
+  runsAll: "全部",
+  runsFailed: "失败",
+  runsSlow: "较慢",
+  runsBackground: "后台",
+  runsSortLabel: "执行记录排序",
+  runsLatest: "最新",
+  runsSlowest: "最慢",
+  runsSearch: "筛选命令",
+  runsSummary: "概览",
+  runsSettled: "已结束",
+  runsFailedRate: "占已结束的 {rate}",
+  runsTotalTime: "总耗时",
+  runsBackgroundSub: "立即返回",
+  runsAttention: "关注",
+  runsSlowestRun: "最慢",
+  runsLastFailure: "最近失败",
+  runsPrograms: "程序",
+  runsProgramsHint: "点击筛选执行记录",
+  runsNoMatch: "没有匹配的执行记录",
+  runsTruncated: "最近 {shown} / {total} 次",
+  runsSlowHint: "耗时 {threshold} 及以上为较慢",
+  runStatus: "状态",
+  runDuration: "耗时",
+  runExit: "退出码 {code}",
+  runRequest: "请求",
+  runSubagent: "子 Agent",
+  runSub: "子",
+  runBg: "后台",
+  statusOk: "成功",
+  statusFailed: "失败",
+  statusCancelled: "已取消或被中断",
+  statusBackground: "转入后台",
+  statusRunning: "运行中",
 }
 
 export type MessageKey = keyof Messages
-export type Translate = (key: MessageKey, values?: Readonly<Record<string, string | number>>) => string
+/** Looks up a message; `locale` is the host language, for formatting dates and times to match. */
+export type Translate = ((key: MessageKey, values?: Readonly<Record<string, string | number>>) => string) & { readonly locale: string }
 
 export function createTranslate(locale: string): Translate {
   const messages = locale.toLowerCase().startsWith("zh") ? zh : en
-  return (key, values) =>
+  const translate = (key: MessageKey, values?: Readonly<Record<string, string | number>>) =>
     messages[key].replace(/\{(\w+)\}/g, (match, name: string) => (values && name in values ? String(values[name]) : match))
+  return Object.assign(translate, { locale: supportedLocale(locale) })
+}
+
+/** `locale` when Intl knows it, else the runtime default, so formatting never throws. */
+function supportedLocale(locale: string): string {
+  try {
+    return Intl.DateTimeFormat.supportedLocalesOf(locale).length > 0 ? locale : Intl.DateTimeFormat().resolvedOptions().locale
+  } catch {
+    return Intl.DateTimeFormat().resolvedOptions().locale
+  }
+}
+
+/** Wall-clock time in the host language, e.g. 14:03:22. */
+export function clockTime(t: Translate, at: number): string {
+  return new Date(at).toLocaleTimeString(t.locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+}
+
+/** Date and time in the host language. */
+export function dateTime(t: Translate, at: number): string {
+  return new Date(at).toLocaleString(t.locale, { dateStyle: "medium", timeStyle: "medium" })
 }
 
 export function relativeTime(t: Translate, at: number, now = Date.now()): string {

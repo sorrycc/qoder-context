@@ -1,14 +1,40 @@
 import { Button } from "@qoder-space/design-system"
 import type { PluginViewContext } from "@qoder/plugin-api/view"
-import { memo, useMemo, useRef, type ReactNode } from "react"
+import { memo, useCallback, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode, type RefObject } from "react"
 import { formatPercent, formatTokens, shortPath } from "../shared/format.js"
-import { SERVICE_NAME, type ContextEvent, type FileActivity, type SessionDetail, type SessionResponse, type Tally } from "../shared/types.js"
-import { ContextRing, Legend, RequestTrend, SERIES } from "./charts.js"
+import {
+  SERVICE_NAME,
+  type CommandRun,
+  type CommandStatus,
+  type ContextEvent,
+  type FileActivity,
+  type SessionDetail,
+  type SessionResponse,
+  type Tally,
+  type TimingStats,
+} from "../shared/types.js"
+import { ContextRing, formatElapsed, Legend, RequestTrend, SERIES, StackBar, type TrendMode } from "./charts.js"
 import { registerView, useLoad } from "./host.js"
-import { formatDuration, relativeTime, type MessageKey, type Translate } from "./i18n.js"
-import { TALLY_CAP } from "./lists.js"
-import { enter } from "./motion.js"
-import { contextGauge, splitPath, timeline, type Gauge, type TimelineItem } from "./session-model.js"
+import { clockTime, dateTime, formatDuration, relativeTime, type MessageKey, type Translate } from "./i18n.js"
+import { highlight, searchTerms, TALLY_CAP } from "./lists.js"
+import { enter, prefersReducedMotion } from "./motion.js"
+import {
+  contextGauge,
+  displayCommand,
+  eventRequest,
+  isSlow,
+  runFacts,
+  SLOW_MS,
+  splitPath,
+  timeline,
+  timingParts,
+  visibleRuns,
+  type Gauge,
+  type RunFilter,
+  type RunSort,
+  type TimelineItem,
+  type TimingPart,
+} from "./session-model.js"
 import { TipBody, Tooltip, useChartTip, useHoverTip } from "./tooltip.js"
 import {
   AnimatedNumber,
@@ -20,7 +46,10 @@ import {
   Icon,
   Kpi,
   KpiSkeletons,
+  Segmented,
   Skeleton,
+  Spinner,
+  useDebounced,
   useNow,
   type IconName,
 } from "./ui.js"
@@ -106,6 +135,7 @@ function Placeholder() {
         <Skeleton height={180} />
         <Skeleton height={180} />
       </div>
+      <Skeleton height={260} />
     </div>
   )
 }
@@ -171,6 +201,34 @@ function Header({
 const Detail = memo(function Detail({ detail, t }: { readonly detail: SessionDetail; readonly t: Translate }) {
   const { summary } = detail
   const gauge = useMemo(() => contextGauge(detail), [detail])
+  // The pinned request by its index in the whole session, so it stays put as old requests drop off
+  // the front of the trend. `reveal` counts requests from outside the chart to scroll to it.
+  const [pin, setPin] = useState<{ readonly index: number; readonly reveal: number } | null>(null)
+  const reveals = useRef(0)
+  const trendRef = useRef<HTMLElement | null>(null)
+  const offset = detail.requestsTruncated
+  const count = detail.requests.length
+  const pinned = pin && pin.index >= offset && pin.index < offset + count ? pin.index - offset : null
+  const onPin = useCallback(
+    (index: number | null) => setPin((current) => (index === null ? null : { index: index + offset, reveal: current?.reveal ?? 0 })),
+    [offset],
+  )
+  const showRequest = useCallback(
+    (requestIndex: number) => {
+      if (requestIndex < offset || requestIndex >= offset + count) return
+      reveals.current += 1
+      setPin({ index: requestIndex, reveal: reveals.current })
+      trendRef.current?.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" })
+    },
+    [offset, count],
+  )
+  const showEvent = useCallback(
+    (event: ContextEvent) => {
+      const index = eventRequest(event, offset, count)
+      if (index !== null) showRequest(index + offset)
+    },
+    [offset, count, showRequest],
+  )
   return (
     <>
       <div className="qc-grid qc-hero">
@@ -205,25 +263,14 @@ const Detail = memo(function Detail({ detail, t }: { readonly detail: SessionDet
           <Kpi index={8} label={t("statSpan")} value={summary.lastAt - summary.firstAt} format={formatDuration} />
         </div>
       </div>
-      <Card
-        index={9}
-        className="qc-stack-gap"
-        title={t("trendTitle")}
-        hint={
-          detail.requestsTruncated > 0
-            ? t("trendTruncated", { shown: detail.requests.length, total: detail.requests.length + detail.requestsTruncated })
-            : t("trendHint")
-        }
-      >
-        <RequestTrend requests={detail.requests} events={detail.events} offset={detail.requestsTruncated} window={summary.contextWindow} t={t} />
-        <Legend t={t} window={summary.contextWindow} compactions={detail.events.some((event) => event.kind === "compaction")} />
-      </Card>
+      <TrendCard detail={detail} pinned={pinned} reveal={pin?.reveal ?? 0} onPin={onPin} sectionRef={trendRef} t={t} />
       <div className="qc-grid qc-pairs">
-        <Events events={detail.events} t={t} />
+        <Timing detail={detail} t={t} />
+        <Events events={detail.events} reachable={(event) => eventRequest(event, offset, count) !== null} onShow={showEvent} t={t} />
         <Files files={detail.files} t={t} />
-        <TallyCard index={12} title={t("toolsTitle")} tallies={summary.tools} empty={{ icon: "tool", title: t("emptySessionTools") }} t={t} />
-        <TallyCard index={13} title={t("commandsTitle")} tallies={summary.commands} empty={{ icon: "terminal", title: t("emptySessionCommands") }} t={t} />
+        <TallyCard index={13} title={t("toolsTitle")} tallies={summary.tools} empty={{ icon: "tool", title: t("emptySessionTools") }} t={t} />
       </div>
+      <Commands detail={detail} onShowRequest={showRequest} t={t} />
     </>
   )
 })
@@ -307,14 +354,43 @@ function Stat({ label, tone, color, children }: { readonly label: string; readon
 const EVENT_ICONS: Record<ContextEvent["kind"], IconName> = { compaction: "scissors", retry: "refresh", error: "alert" }
 const EVENT_TONES: Record<ContextEvent["kind"], string> = { compaction: "warning", retry: "neutral", error: "danger" }
 
-function Events({ events, t }: { readonly events: readonly ContextEvent[]; readonly t: Translate }) {
+function Events({
+  events,
+  reachable,
+  onShow,
+  t,
+}: {
+  readonly events: readonly ContextEvent[]
+  /** Whether the request an event led into is in the trend. */
+  readonly reachable: (event: ContextEvent) => boolean
+  readonly onShow: (event: ContextEvent) => void
+  readonly t: Translate
+}) {
   const items = useMemo(() => timeline(events), [events])
   const now = useNow(30_000)
   const tip = useChartTip()
   const hover = useHoverTip(tip, 250)
   const active = tip.active === null ? undefined : items[tip.active]
+  const activate = (item: TimelineItem) => (reachable(item.event) ? () => onShow(item.event) : undefined)
+  const onKeyDown = (item: TimelineItem) => (event: KeyboardEvent) => {
+    if ((event.key === "Enter" || event.key === " ") && reachable(item.event)) {
+      event.preventDefault()
+      onShow(item.event)
+    }
+  }
   const row = (item: TimelineItem, position: number) => (
-    <li key={item.key} className="qc-enter" style={enter(position % EVENT_CAP)} data-tone={EVENT_TONES[item.event.kind]} data-qc-tip={position} tabIndex={0} aria-describedby={tip.id}>
+    <li
+      key={item.key}
+      className="qc-enter"
+      style={enter(position % EVENT_CAP)}
+      data-tone={EVENT_TONES[item.event.kind]}
+      data-qc-tip={position}
+      data-clickable={reachable(item.event) || undefined}
+      tabIndex={0}
+      aria-describedby={tip.id}
+      onClick={activate(item)}
+      onKeyDown={onKeyDown(item)}
+    >
       <span className="qc-timeline-node">
         <Icon name={EVENT_ICONS[item.event.kind]} size={12} />
       </span>
@@ -329,7 +405,7 @@ function Events({ events, t }: { readonly events: readonly ContextEvent[]; reado
     </li>
   )
   return (
-    <Card index={10} title={t("eventsTitle")} hint={items.length > 0 ? events.length : undefined}>
+    <Card index={11} title={t("eventsTitle")} hint={items.length > 0 ? events.length : undefined}>
       {items.length === 0 ? (
         <EmptyState compact icon="sparkle" title={t("eventsEmpty")} hint={t("eventsEmptyHint")} />
       ) : (
@@ -342,7 +418,7 @@ function Events({ events, t }: { readonly events: readonly ContextEvent[]; reado
             showAll={t("showAll", { count: items.length })}
             showLess={t("showLess")}
           />
-          <Tooltip tip={tip}>{active ? <EventTip item={active} t={t} /> : null}</Tooltip>
+          <Tooltip tip={tip}>{active ? <EventTip item={active} linked={reachable(active.event)} t={t} /> : null}</Tooltip>
         </div>
       )}
     </Card>
@@ -360,9 +436,9 @@ function eventDetail(event: ContextEvent): string {
   return `${tokens(event.preTokens)} → ${tokens(event.postTokens)}${event.durationMs !== null ? ` · ${formatDuration(event.durationMs)}` : ""}`
 }
 
-function EventTip({ item, t }: { readonly item: TimelineItem; readonly t: Translate }) {
+function EventTip({ item, linked, t }: { readonly item: TimelineItem; readonly linked: boolean; readonly t: Translate }) {
   const { event } = item
-  const when = (at: number) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" })
+  const when = (at: number) => dateTime(t, at)
   const rows: { label: string; value: string }[] = [
     { label: t("eventWhen"), value: when(event.at) },
     { label: t("eventPosition"), value: event.requestIndex > 0 ? t("afterRequest", { index: event.requestIndex }) : t("sessionStart") },
@@ -377,7 +453,23 @@ function EventTip({ item, t }: { readonly item: TimelineItem; readonly t: Transl
   } else if (item.count > 1) {
     rows.push({ label: t("occurrences"), value: item.count.toLocaleString() }, { label: t("eventFirst"), value: when(item.firstAt) })
   }
-  return <TipBody title={eventTitle(event, t)} rows={rows} note={event.kind === "compaction" ? undefined : event.text} />
+  const hint = linked ? <div className="qc-tip-hint">{t("showInTrend")}</div> : null
+  return (
+    <TipBody
+      title={eventTitle(event, t)}
+      rows={rows}
+      note={
+        event.kind === "compaction" ? (
+          hint
+        ) : (
+          <>
+            {event.text}
+            {hint}
+          </>
+        )
+      }
+    />
+  )
 }
 
 function Files({ files, t }: { readonly files: readonly FileActivity[]; readonly t: Translate }) {
@@ -406,7 +498,7 @@ function Files({ files, t }: { readonly files: readonly FileActivity[]; readonly
   }
   return (
     <Card
-      index={11}
+      index={12}
       title={t("filesTitle")}
       hint={files.length > 0 ? files.length : undefined}
       aside={
@@ -498,4 +590,481 @@ function TallyCard({
       )}
     </Card>
   )
+}
+
+function TrendCard({
+  detail,
+  pinned,
+  reveal,
+  onPin,
+  sectionRef,
+  t,
+}: {
+  readonly detail: SessionDetail
+  readonly pinned: number | null
+  readonly reveal: number
+  readonly onPin: (index: number | null) => void
+  readonly sectionRef: RefObject<HTMLElement | null>
+  readonly t: Translate
+}) {
+  const [mode, setMode] = useState<TrendMode>("total")
+  const options = useMemo(
+    () => [
+      { value: "total" as const, label: t("trendTotal") },
+      { value: "delta" as const, label: t("trendDelta") },
+    ],
+    [t],
+  )
+  const { requests, requestsTruncated, summary } = detail
+  return (
+    <Card
+      index={9}
+      className="qc-stack-gap"
+      sectionRef={sectionRef}
+      title={t("trendTitle")}
+      hint={
+        requestsTruncated > 0
+          ? t("trendTruncated", { shown: requests.length, total: requests.length + requestsTruncated })
+          : t(mode === "delta" ? "trendHintDelta" : "trendHint")
+      }
+      aside={<Segmented label={t("trendModeLabel")} value={mode} options={options} onChange={setMode} />}
+    >
+      <RequestTrend
+        requests={requests}
+        events={detail.events}
+        offset={requestsTruncated}
+        window={summary.contextWindow}
+        mode={mode}
+        pinned={pinned}
+        reveal={reveal}
+        onPin={onPin}
+        t={t}
+      >
+        {mode === "total" ? (
+          <Legend t={t} window={summary.contextWindow} compactions={detail.events.some((event) => event.kind === "compaction")} />
+        ) : (
+          <div className="qc-legend">
+            <span>
+              <i className="qc-swatch" style={{ background: SERIES.uncached }} />
+              {t("deltaGrowth")}
+            </span>
+            <span>
+              <i className="qc-swatch" style={{ background: "var(--qc-success)" }} />
+              {t("deltaShrink")}
+            </span>
+          </div>
+        )}
+      </RequestTrend>
+    </Card>
+  )
+}
+
+const TIMING_COLORS: Record<TimingPart["kind"], string> = { model: "var(--qc-time-model)", tool: "var(--qc-time-tool)", compact: "var(--qc-warning)" }
+const TIMING_LABELS: Record<TimingPart["kind"], MessageKey> = { model: "timingModel", tool: "timingTools", compact: "timingCompaction" }
+
+function Timing({ detail, t }: { readonly detail: SessionDetail; readonly t: Translate }) {
+  const { timing, requests, summary } = detail
+  const { activeMs, parts, rate } = useMemo(() => timingParts(timing), [timing])
+  const counts = useMemo(
+    () => ({
+      model: requests.filter((request) => request.latencyMs !== null).length,
+      tool: requests.reduce((sum, request) => sum + request.tools.length, 0),
+      compact: summary.compactions,
+    }),
+    [requests, summary.compactions],
+  )
+  const tip = useChartTip()
+  const hover = useHoverTip(tip, 200)
+  const subs: Record<TimingPart["kind"], string> = {
+    model: t("timingModelSub", { count: counts.model.toLocaleString() }),
+    tool: t("timingToolsSub", { count: counts.tool.toLocaleString() }),
+    compact: t("timingCompactSub", { count: counts.compact.toLocaleString() }),
+  }
+  return (
+    <Card
+      index={10}
+      title={t("timingTitle")}
+      hint={activeMs > 0 ? t("timingHint") : undefined}
+      aside={
+        rate !== null ? (
+          <span className="qc-tip-host" ref={tip.hostRef} {...hover}>
+            <span className="qc-badge qc-rate" tabIndex={0} data-qc-tip={0} aria-describedby={tip.id}>
+              {t("timingRate", { rate: Math.round(rate).toLocaleString() })}
+            </span>
+            <Tooltip tip={tip}>{tip.active !== null ? <TipBody title={t("timingRate", { rate: rate.toFixed(1) })} rows={[]} note={t("timingRateHint")} /> : null}</Tooltip>
+          </span>
+        ) : undefined
+      }
+    >
+      {activeMs <= 0 ? (
+        <EmptyState compact icon="clock" title={t("timingEmpty")} hint={t("timingEmptyHint")} />
+      ) : (
+        <>
+          <div className="qc-timing-total">
+            <span className="qc-timing-value">
+              <AnimatedNumber value={activeMs} format={formatDurationValue} />
+            </span>
+            <span className="qc-muted">{t("timingActive")}</span>
+          </div>
+          <StackBar large scale={activeMs} parts={parts.map((part) => ({ value: part.ms, color: TIMING_COLORS[part.kind] }))} label={t("timingActive")} />
+          <ul className="qc-timing-parts">
+            {parts.map((part, position) => (
+              <li key={part.kind} className="qc-enter" style={enter(position)}>
+                <i className="qc-swatch" style={{ background: TIMING_COLORS[part.kind] }} />
+                <span className="qc-timing-label">
+                  {t(TIMING_LABELS[part.kind])}
+                  <span className="qc-muted">{subs[part.kind]}</span>
+                </span>
+                <span className="qc-timing-ms">{formatElapsed(part.ms)}</span>
+                <span className="qc-timing-share">{formatPercent(part.share, part.share < 0.1 ? 1 : 0)}</span>
+              </li>
+            ))}
+          </ul>
+          <TimingRibbon ribbon={timing.ribbon} activeMs={activeMs} t={t} />
+        </>
+      )}
+    </Card>
+  )
+}
+
+const formatDurationValue = (value: number | null) => formatDuration(value)
+
+/** The active time as a strip of slices, oldest first, each stacked by what it was spent on. */
+function TimingRibbon({ ribbon, activeMs, t }: { readonly ribbon: TimingStats["ribbon"]; readonly activeMs: number; readonly t: Translate }) {
+  const tip = useChartTip()
+  const slice = activeMs / Math.max(1, ribbon.length)
+  const move = (event: PointerEvent<SVGSVGElement>) => {
+    const box = event.currentTarget.getBoundingClientRect()
+    const index = Math.min(ribbon.length - 1, Math.max(0, Math.floor(((event.clientX - box.left) / box.width) * ribbon.length)))
+    if (index !== tip.active) tip.show(index)
+  }
+  const active = tip.active === null ? undefined : ribbon[tip.active]
+  const kinds = ["model", "tool", "compact"] as const
+  return (
+    <div className="qc-tip-host qc-ribbon-wrap" ref={tip.hostRef}>
+      <svg
+        className="qc-ribbon qc-chart"
+        viewBox={`0 0 ${ribbon.length} 1`}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={t("timingRibbon")}
+        data-active={active ? "true" : undefined}
+        onPointerMove={move}
+        onPointerLeave={tip.hide}
+        {...tip.keyboard(ribbon.length)}
+      >
+        {ribbon.map((cell, index) => {
+          const total = cell.model + cell.tool + cell.compact || 1
+          let y = 1
+          return (
+            <g key={index} data-qc-tip={index} data-active={tip.active === index || undefined}>
+              {kinds.map((kind) => {
+                const height = cell[kind] / total
+                y -= height
+                return height > 0 ? <rect key={kind} x={index + 0.08} y={y} width={0.84} height={height} fill={TIMING_COLORS[kind]} /> : null
+              })}
+            </g>
+          )
+        })}
+      </svg>
+      <div className="qc-ribbon-axis" aria-hidden="true">
+        <span>0</span>
+        <span>{formatDuration(activeMs / 2)}</span>
+        <span>{formatDuration(activeMs)}</span>
+      </div>
+      <Tooltip tip={tip}>
+        {active && tip.active !== null ? (
+          <TipBody
+            title={t("timingSlice", { from: formatDuration(tip.active * slice), to: formatDuration((tip.active + 1) * slice) })}
+            rows={kinds
+              .filter((kind) => active[kind] > 0)
+              .map((kind) => ({ label: t(TIMING_LABELS[kind]), value: formatElapsed(active[kind]), color: TIMING_COLORS[kind] }))}
+          />
+        ) : null}
+      </Tooltip>
+    </div>
+  )
+}
+
+const RUN_CAP = 8
+const STATUS_ICONS: Record<CommandStatus, IconName | null> = { ok: "check", failed: "close", cancelled: "stop", background: "layers", running: null }
+const STATUS_LABELS: Record<CommandStatus, MessageKey> = {
+  ok: "statusOk",
+  failed: "statusFailed",
+  cancelled: "statusCancelled",
+  background: "statusBackground",
+  running: "statusRunning",
+}
+
+function Commands({
+  detail,
+  onShowRequest,
+  t,
+}: {
+  readonly detail: SessionDetail
+  readonly onShowRequest: (requestIndex: number) => void
+  readonly t: Translate
+}) {
+  const runs = detail.commands
+  const programs = detail.summary.commands
+  const facts = useMemo(() => runFacts(runs), [runs])
+  const [filter, setFilter] = useState<RunFilter>("all")
+  const [sort, setSort] = useState<RunSort>("latest")
+  const [program, setProgram] = useState<string | null>(null)
+  const [search, setSearch] = useState("")
+  const query = useDebounced(search, 150)
+  const shown = useMemo(() => visibleRuns(runs, { filter, program, query, sort }), [runs, filter, program, query, sort])
+  const terms = useMemo(() => [...searchTerms(query), ...(program ? [program.toLowerCase()] : [])], [query, program])
+  const filterOptions = useMemo(
+    () =>
+      (
+        [
+          ["all", "runsAll"],
+          ["failed", "runsFailed"],
+          ["slow", "runsSlow"],
+          ["background", "runsBackground"],
+        ] as const
+      ).map(([value, key]) => ({ value, label: `${t(key)} ${facts.counts[value].toLocaleString()}` })),
+    [facts, t],
+  )
+  const sortOptions = useMemo(
+    () => [
+      { value: "latest" as const, label: t("runsLatest") },
+      { value: "slowest" as const, label: t("runsSlowest") },
+    ],
+    [t],
+  )
+  const tip = useChartTip()
+  const hover = useHoverTip(tip, 300)
+  const active = tip.active === null ? undefined : shown[tip.active]
+  const offset = detail.requestsTruncated
+  const reachable = (run: CommandRun) => run.requestIndex !== null && run.requestIndex >= offset && run.requestIndex < offset + detail.requests.length
+  const programMax = Math.max(1, ...programs.map((tally) => tally.count))
+  const programTotal = programs.reduce((sum, tally) => sum + tally.count, 0)
+
+  const row = (run: CommandRun, position: number) => (
+    <li key={run.id} className="qc-run" data-status={run.status} data-qc-tip={position} tabIndex={0} aria-describedby={tip.id}>
+      <span className="qc-run-status">{STATUS_ICONS[run.status] ? <Icon name={STATUS_ICONS[run.status]!} size={11} /> : <Spinner />}</span>
+      <code className="qc-run-command">
+        {highlight(displayCommand(run.command, detail.summary.cwd), terms).map((segment, index) =>
+          segment.match ? (
+            <mark key={index} className="qc-mark">
+              {segment.text}
+            </mark>
+          ) : (
+            segment.text
+          ),
+        )}
+      </code>
+      <span className="qc-run-meta">
+        {run.subagent ? <span className="qc-badge">{t("runSub")}</span> : null}
+        {run.status === "background" ? <span className="qc-badge" data-tone="accent">{t("runBg")}</span> : null}
+        {run.status === "failed" && run.exitCode !== null ? (
+          <span className="qc-badge" data-tone="danger">
+            {t("runExit", { code: run.exitCode })}
+          </span>
+        ) : null}
+        <span className="qc-run-time" data-slow={isSlow(run) || undefined}>
+          {run.durationMs === null ? "—" : formatElapsed(run.durationMs)}
+        </span>
+        {reachable(run) ? (
+          <button
+            type="button"
+            className="qc-run-link"
+            aria-label={t("showRequest", { index: run.requestIndex! + 1 })}
+            onClick={() => onShowRequest(run.requestIndex!)}
+          >
+            #{run.requestIndex! + 1}
+          </button>
+        ) : null}
+        <time className="qc-run-clock">{clockTime(t, run.at)}</time>
+      </span>
+    </li>
+  )
+
+  if (runs.length === 0) {
+    return (
+      <Card index={14} title={t("runsTitle")}>
+        <EmptyState compact icon="terminal" title={t("emptySessionCommands")} />
+      </Card>
+    )
+  }
+  const settledFailedRate = facts.settled > 0 ? facts.counts.failed / facts.settled : null
+  return (
+    <Card
+      index={14}
+      className="qc-runs-card"
+      title={t("runsTitle")}
+      hint={detail.commandsTruncated > 0 ? t("runsTruncated", { shown: runs.length, total: runs.length + detail.commandsTruncated }) : runs.length}
+    >
+      <div className="qc-runs">
+        <aside className="qc-runs-rail">
+          <h3 className="qc-rail-title">{t("runsSummary")}</h3>
+          <dl className="qc-mini-stats">
+            <div>
+              <dd>
+                <AnimatedNumber value={facts.settled} format={formatCount} />
+              </dd>
+              <dt>{t("runsSettled")}</dt>
+            </div>
+            <div data-tone={facts.counts.failed > 0 ? "danger" : undefined}>
+              <dd>
+                <AnimatedNumber value={facts.counts.failed} format={formatCount} />
+              </dd>
+              <dt>{t("runsFailedRate", { rate: formatPercent(settledFailedRate, 0) })}</dt>
+            </div>
+            <div>
+              <dd>{formatElapsed(facts.totalMs)}</dd>
+              <dt>{t("runsTotalTime")}</dt>
+            </div>
+            <div>
+              <dd>
+                <AnimatedNumber value={facts.counts.background} format={formatCount} />
+              </dd>
+              <dt>{t("runsBackground")}</dt>
+            </div>
+          </dl>
+          {facts.slowest || facts.lastFailure ? (
+            <>
+              <h3 className="qc-rail-title">{t("runsAttention")}</h3>
+              <ul className="qc-attention">
+                {facts.slowest ? (
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFilter("all")
+                        setSort("slowest")
+                      }}
+                    >
+                      <span className="qc-attention-label">{t("runsSlowestRun")}</span>
+                      <code className="qc-name">{displayCommand(facts.slowest.command, detail.summary.cwd)}</code>
+                      <span className="qc-run-time" data-slow={isSlow(facts.slowest) || undefined}>
+                        {formatElapsed(facts.slowest.durationMs ?? 0)}
+                      </span>
+                    </button>
+                  </li>
+                ) : null}
+                {facts.lastFailure ? (
+                  <li data-tone="danger">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFilter("failed")
+                        setSort("latest")
+                      }}
+                    >
+                      <span className="qc-attention-label">{t("runsLastFailure")}</span>
+                      <code className="qc-name">{displayCommand(facts.lastFailure.command, detail.summary.cwd)}</code>
+                      <span className="qc-run-clock">{relativeTime(t, facts.lastFailure.at)}</span>
+                    </button>
+                  </li>
+                ) : null}
+              </ul>
+            </>
+          ) : null}
+          {programs.length > 0 ? (
+            <>
+              <h3 className="qc-rail-title">
+                {t("runsPrograms")} <span className="qc-muted">· {programs.length}</span>
+              </h3>
+              <CappedList
+                className="qc-tally"
+                items={programs}
+                cap={TALLY_CAP}
+                showAll={t("showAll", { count: programs.length })}
+                showLess={t("showLess")}
+                forceOpen={program !== null && programs.findIndex((tally) => tally.name === program) >= TALLY_CAP}
+                render={(tally, position) => (
+                  <li key={tally.name}>
+                    <button
+                      type="button"
+                      aria-pressed={program === tally.name}
+                      aria-label={`${tally.name} · ${t("runsProgramsHint")}`}
+                      onClick={() => setProgram(program === tally.name ? null : tally.name)}
+                    >
+                      <span className="qc-name">{tally.name}</span>
+                      <span className="qc-count">
+                        ×{tally.count.toLocaleString()} <span className="qc-muted">{formatPercent(tally.count / Math.max(1, programTotal), 0)}</span>
+                      </span>
+                      <span className="qc-tally-bar">
+                        <span style={{ width: `${(tally.count / programMax) * 100}%`, ...enter(position) }} />
+                      </span>
+                    </button>
+                  </li>
+                )}
+              />
+            </>
+          ) : null}
+        </aside>
+        <div className="qc-runs-main">
+          <div className="qc-toolbar">
+            <Segmented className="qc-run-filter" label={t("runsFilterLabel")} value={filter} options={filterOptions} onChange={setFilter} />
+            <div className="qc-search">
+              <Icon name="search" size={14} />
+              <input type="search" value={search} placeholder={t("runsSearch")} aria-label={t("runsSearch")} onChange={(event) => setSearch(event.target.value)} />
+              {search ? (
+                <button type="button" className="qc-search-clear" aria-label={t("clearSearch")} onClick={() => setSearch("")}>
+                  <Icon name="close" size={10} />
+                </button>
+              ) : null}
+            </div>
+            <Segmented label={t("runsSortLabel")} value={sort} options={sortOptions} onChange={setSort} />
+            {program ? (
+              <span className="qc-chip">
+                {program}
+                <button type="button" aria-label={t("clearFilter")} onClick={() => setProgram(null)}>
+                  <Icon name="close" size={10} />
+                </button>
+              </span>
+            ) : null}
+          </div>
+          {shown.length === 0 ? (
+            <EmptyState
+              compact
+              icon="search"
+              title={t("runsNoMatch")}
+              hint={filter === "slow" ? t("runsSlowHint", { threshold: formatElapsed(SLOW_MS) }) : undefined}
+              action={
+                <button
+                  type="button"
+                  className="qc-more"
+                  onClick={() => {
+                    setFilter("all")
+                    setProgram(null)
+                    setSearch("")
+                  }}
+                >
+                  {t("clearAll")}
+                </button>
+              }
+            />
+          ) : (
+            <div className="qc-tip-host qc-tally-host" ref={tip.hostRef} {...hover}>
+              <CappedList
+                key={`${filter}|${program}|${sort}|${query}`}
+                className="qc-run-list"
+                items={shown}
+                cap={RUN_CAP}
+                render={row}
+                showAll={t("showAll", { count: shown.length })}
+                showLess={t("showLess")}
+              />
+              <Tooltip tip={tip}>{active ? <RunTip run={active} t={t} /> : null}</Tooltip>
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+function RunTip({ run, t }: { readonly run: CommandRun; readonly t: Translate }) {
+  const rows: { label: string; value: string }[] = [{ label: t("runStatus"), value: t(STATUS_LABELS[run.status]) }]
+  if (run.exitCode !== null) rows.push({ label: t("runExit", { code: "" }).trim(), value: String(run.exitCode) })
+  if (run.durationMs !== null) rows.push({ label: t("runDuration"), value: formatElapsed(run.durationMs) })
+  rows.push({ label: t("eventWhen"), value: dateTime(t, run.at) })
+  if (run.requestIndex !== null) rows.push({ label: t("runRequest"), value: `#${run.requestIndex + 1} · ${t("turn", { turn: run.turn })}` })
+  if (run.subagent) rows.push({ label: t("runSubagent"), value: "✓" })
+  return <TipBody title={<code className="qc-tip-code">{run.command}</code>} rows={rows} />
 }

@@ -9,9 +9,15 @@ A Qoder Desktop App Plugin for context and token insight, in the spirit of
   cards that open the session in Qoder. Clicking a heatmap day or a tally filters the cards.
 - **Context** (per conversation, in the Task Monitor's "Context" section): a context ring against
   the model window with headroom, cached/uncached split and an estimate of how many requests still fit
-  at the recent growth rate; turn/request/token/cache stats; a per-request stacked trend with
-  compaction markers; a timeline of context events (compactions, retries, errors, repeats folded);
-  file activity split into reads and writes; tools and commands. Rows show details on hover or focus.
+  at the recent growth rate; turn/request/token/cache stats; a per-request trend with compaction
+  markers, shown as the stacked prompt (**Total**) or each request's change in size (**Delta**), where
+  clicking a bar, a ✂ marker, a context event or a command's `#n` pins that request and shows its
+  details; a **Timing** card splitting active time into model, tool and compaction time with a time
+  ribbon and an output rate; a timeline of context events (compactions, retries, errors, repeats
+  folded); file activity split into reads and writes; tools; and **Command executions**: every shell
+  run with its outcome (succeeded, failed with exit code, cancelled, backgrounded, running), wall time
+  and request, filterable by All/Failed/Slow/Background, program and text, sorted by latest or
+  slowest. Rows show details on hover or focus.
   It refreshes every 15 s while visible; a poll for an unchanged transcript returns early without
   re-reading it, and only numbers that changed animate.
 - Charts show a tooltip on hover. Focus a chart (Tab) and use the arrow keys, Home and End to
@@ -43,6 +49,8 @@ What is read:
 | Context window | latest `runtime-config.contextWindow`, else derived from `usage.context_usage_ratio` |
 | Compactions | `system/compact_boundary` with `compactMetadata` |
 | Turns | user entries with `humanInput` (slash-command turns are meta entries that still carry it) |
+| Model / tool time | entry timestamps: a reply's time minus the prompt or tool result before it; a reply's tool calls until their last result; compactions' reported `durationMs`. Waits for the user and gaps over an hour aren't counted |
+| Command outcomes | the Bash/Monitor `tool_result` (`is_error`) and its `toolUseResult` (`exitCode`, `interrupted`, `kind: backgrounded/cancelled`); a non-zero exit the tool explains (grep's "No matches found") counts as success |
 | Tools, commands, files, skills | `tool_use` blocks (`Bash`/`Monitor` commands with heredoc bodies, quoted strings and shell keywords ignored; `Read`/`Edit`/`Write` paths; `Skill`), plus "Skill … activated" notices |
 
 Limits worth knowing:

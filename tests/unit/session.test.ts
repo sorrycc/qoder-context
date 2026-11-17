@@ -3,14 +3,25 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { ringArcs } from "../../src/browser/charts.js"
-import { contextGauge, splitPath, timeline } from "../../src/browser/session-model.js"
+import {
+  contextGauge,
+  displayCommand,
+  eventRequest,
+  promptDeltas,
+  runFacts,
+  SLOW_MS,
+  splitPath,
+  timeline,
+  timingParts,
+  visibleRuns,
+} from "../../src/browser/session-model.js"
 import { SessionDetails } from "../../src/node/session.js"
 import { TranscriptLocator } from "../../src/node/transcripts.js"
-import type { ContextEvent, RequestPoint, SessionDetail } from "../../src/shared/types.js"
+import type { CommandRun, ContextEvent, RequestPoint, SessionDetail } from "../../src/shared/types.js"
 import { assistant, human } from "./fixtures.js"
 
 function request(prompt: number, cacheRead = 0): RequestPoint {
-  return { at: 0, turn: 1, prompt, cacheRead, output: 10, model: null, tools: [] }
+  return { at: 0, turn: 1, prompt, cacheRead, output: 10, model: null, tools: [], latencyMs: null }
 }
 
 function detail(requests: RequestPoint[], overrides: { window?: number | null; events?: ContextEvent[]; truncated?: number } = {}): SessionDetail {
@@ -41,6 +52,9 @@ function detail(requests: RequestPoint[], overrides: { window?: number | null; e
     requestsTruncated: overrides.truncated ?? 0,
     events: overrides.events ?? [],
     files: [],
+    commands: [],
+    commandsTruncated: 0,
+    timing: { modelMs: 0, toolMs: 0, compactMs: 0, timedOutput: 0, ribbon: [] },
   }
 }
 
@@ -151,5 +165,84 @@ describe("SessionDetails", () => {
     await writeFile(file, lines([human("go", 0), assistant("m1", 1, [], { input_tokens: 300, output_tokens: 30 }), assistant("m2", 2, [], { input_tokens: 900, output_tokens: 30 })]))
     const second = await details.load(sessionId, first.version)
     expect(second.status === "ok" && second.detail.summary.contextTokens).toBe(900)
+  })
+})
+
+describe("command runs", () => {
+  const run = (overrides: Partial<CommandRun>): CommandRun => ({
+    id: "r",
+    command: "ls",
+    programs: ["ls"],
+    at: 0,
+    durationMs: 100,
+    status: "ok",
+    exitCode: 0,
+    requestIndex: 0,
+    turn: 1,
+    subagent: false,
+    ...overrides,
+  })
+
+  it("drops a leading cd into the session folder only", () => {
+    expect(displayCommand("cd /w/app && npm test", "/w/app")).toBe("npm test")
+    expect(displayCommand('cd "/w/app"; ls', "/w/app")).toBe("ls")
+    expect(displayCommand("cd /w/other && ls", "/w/app")).toBe("cd /w/other && ls")
+    expect(displayCommand("cd /w/app && ", "/w/app")).toBe("cd /w/app && ")
+    expect(displayCommand("ls", null)).toBe("ls")
+  })
+
+  it("counts failures, slow and background runs and finds the slowest and the last failure", () => {
+    const runs = [
+      run({ id: "a", at: 1, durationMs: SLOW_MS }),
+      run({ id: "b", at: 2, status: "failed", exitCode: 1, durationMs: 50 }),
+      run({ id: "c", at: 3, status: "background", durationMs: 60_000 }),
+      run({ id: "d", at: 4, status: "running", durationMs: null }),
+      run({ id: "e", at: 5, status: "failed", exitCode: 2, durationMs: 20 }),
+    ]
+    const facts = runFacts(runs)
+    expect(facts.counts).toEqual({ all: 5, failed: 2, slow: 1, background: 1 })
+    expect(facts.settled).toBe(3)
+    expect(facts.totalMs).toBe(SLOW_MS + 70)
+    expect(facts.slowest?.id).toBe("a")
+    expect(facts.lastFailure?.id).toBe("e")
+  })
+
+  it("filters by kind, program and search, newest or slowest first", () => {
+    const runs = [
+      run({ id: "a", command: "npm test", programs: ["npm"], durationMs: 300 }),
+      run({ id: "b", command: "git status", programs: ["git"], durationMs: 900 }),
+      run({ id: "c", command: "npm run build", programs: ["npm"], status: "failed", durationMs: 100 }),
+    ]
+    const ids = (options: Partial<Parameters<typeof visibleRuns>[1]>) =>
+      visibleRuns(runs, { filter: "all", program: null, query: "", sort: "latest", ...options }).map((item) => item.id)
+    expect(ids({})).toEqual(["c", "b", "a"])
+    expect(ids({ sort: "slowest" })).toEqual(["b", "a", "c"])
+    expect(ids({ program: "npm" })).toEqual(["c", "a"])
+    expect(ids({ filter: "failed" })).toEqual(["c"])
+    expect(ids({ query: "NPM te" })).toEqual(["a"])
+  })
+})
+
+describe("trend helpers", () => {
+  it("maps an event to the request after it, or the last one, within the shown window", () => {
+    expect(eventRequest(compaction(5), 2, 10)).toBe(3)
+    expect(eventRequest(compaction(15), 2, 10)).toBe(9)
+    expect(eventRequest(compaction(1), 2, 10)).toBeNull()
+    expect(eventRequest(compaction(0), 0, 0)).toBeNull()
+  })
+
+  it("measures each request's prompt change", () => {
+    expect(promptDeltas([request(100), request(250), request(40)])).toEqual([null, 150, -210])
+  })
+
+  it("splits active time into shares and an output rate over model time", () => {
+    const parts = timingParts({ modelMs: 6_000, toolMs: 3_000, compactMs: 0, timedOutput: 600, ribbon: [] })
+    expect(parts.activeMs).toBe(9_000)
+    expect(parts.parts.map((part) => [part.kind, part.share])).toEqual([
+      ["model", 6_000 / 9_000],
+      ["tool", 3_000 / 9_000],
+    ])
+    expect(parts.rate).toBe(100)
+    expect(timingParts({ modelMs: 500, toolMs: 0, compactMs: 0, timedOutput: 10, ribbon: [] }).rate).toBeNull()
   })
 })

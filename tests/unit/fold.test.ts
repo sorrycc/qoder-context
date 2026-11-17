@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { commandPrograms, SessionFold } from "../../src/node/fold.js"
+import { commandOutcome, commandPrograms, RIBBON_SLICES, SessionFold } from "../../src/node/fold.js"
 import { assistant, at, human, toolResult, toolUse } from "./fixtures.js"
 
 function fold(entries: unknown[], subagents: unknown[][] = []) {
@@ -123,6 +123,92 @@ describe("SessionFold", () => {
       { type: "custom-title", customTitle: "Mine" },
     ]).summary()
     expect(summary.title).toBe("Mine")
+  })
+})
+
+describe("command runs", () => {
+  it("records each shell run with its outcome, wall time, request and turn", () => {
+    const detail = fold([
+      human("go", 0),
+      assistant("m1", 1, [toolUse("t1", "Bash", { command: "  npm test  " }), toolUse("t2", "Read", { file_path: "/a" })], {
+        input_tokens: 10,
+        output_tokens: 1,
+      }),
+      { ...toolResult("t1", 3, true), toolUseResult: { kind: "completed", exitCode: 2 } },
+      assistant("m2", 4, [toolUse("t3", "Bash", { command: "grep x y" })], { input_tokens: 20, output_tokens: 1 }),
+      { ...toolResult("t3", 4.5), toolUseResult: { kind: "completed", exitCode: 1, returnCodeInterpretation: "No matches found" } },
+      assistant("m3", 5, [toolUse("t4", "Bash", { command: "sleep 99" })], { input_tokens: 30, output_tokens: 1 }),
+      assistant("m4", 6, [toolUse("t5", "Bash", { command: "npm run dev" })], { input_tokens: 40, output_tokens: 1 }),
+    ]).detail()
+    expect(detail.commands.map(({ command, status, exitCode, durationMs, requestIndex, turn, programs }) => ({ command, status, exitCode, durationMs, requestIndex, turn, programs }))).toEqual([
+      { command: "npm test", status: "failed", exitCode: 2, durationMs: 120_000, requestIndex: 0, turn: 1, programs: ["npm"] },
+      { command: "grep x y", status: "ok", exitCode: 1, durationMs: 30_000, requestIndex: 1, turn: 1, programs: ["grep"] },
+      // No result and a later request moved on: it was cut off.
+      { command: "sleep 99", status: "cancelled", exitCode: null, durationMs: null, requestIndex: 2, turn: 1, programs: ["sleep"] },
+      { command: "npm run dev", status: "running", exitCode: null, durationMs: null, requestIndex: 3, turn: 1, programs: ["npm"] },
+    ])
+  })
+
+  it("reads background, cancelled and failed outcomes from the tool result", () => {
+    expect(commandOutcome({ kind: "backgrounded", taskId: "b1" }, false)).toEqual({ status: "background", exitCode: null })
+    expect(commandOutcome({ taskId: "m1", persistent: true }, false)).toEqual({ status: "background", exitCode: null })
+    expect(commandOutcome({ kind: "cancelled", isHardFailure: true }, true)).toEqual({ status: "cancelled", exitCode: null })
+    expect(commandOutcome({ kind: "tool-status", status: "cancelled" }, true)).toEqual({ status: "cancelled", exitCode: null })
+    expect(commandOutcome({ kind: "completed", exitCode: 0, interrupted: true }, false)).toEqual({ status: "cancelled", exitCode: 0 })
+    expect(commandOutcome(null, true)).toEqual({ status: "failed", exitCode: null })
+    expect(commandOutcome({ kind: "completed", exitCode: 0 }, false)).toEqual({ status: "ok", exitCode: 0 })
+  })
+
+  it("marks subagent runs and gives them no main request", () => {
+    const detail = fold([human("go", 0)], [[assistant("s1", 1, [toolUse("t1", "Bash", { command: "ls" })], { input_tokens: 5 }, { isSidechain: true }), toolResult("t1", 2)]]).detail()
+    expect(detail.commands).toMatchObject([{ command: "ls", status: "ok", subagent: true, requestIndex: null }])
+  })
+})
+
+describe("timing", () => {
+  it("splits active time into model waits, tool runs and compactions, skipping idle gaps", () => {
+    const detail = fold([
+      human("go", 0),
+      assistant("m1", 1, [toolUse("t1", "Bash", { command: "make" })], { input_tokens: 10, output_tokens: 600 }),
+      toolResult("t1", 3),
+      assistant("m2", 4, [{ type: "text", text: "done" }], { input_tokens: 20, output_tokens: 60 }),
+      // The user is away for two hours: not active time.
+      human("again", 124),
+      {
+        type: "system",
+        subtype: "compact_boundary",
+        timestamp: at(126),
+        compactMetadata: { trigger: "manual", preTokens: 20, postTokens: 5, durationMs: 60_000 },
+      },
+      assistant("m3", 127, [], { input_tokens: 5, output_tokens: 10 }),
+    ]).detail()
+    const minute = 60_000
+    expect(detail.timing).toMatchObject({ modelMs: 3 * minute, toolMs: 2 * minute, compactMs: minute, timedOutput: 670 })
+    expect(detail.requests.map((request) => request.latencyMs)).toEqual([minute, minute, minute])
+    const ribbon = detail.timing.ribbon
+    expect(ribbon).toHaveLength(RIBBON_SLICES)
+    const sum = (kind: "model" | "tool" | "compact") => ribbon.reduce((total, cell) => total + cell[kind], 0)
+    expect([sum("model"), sum("tool"), sum("compact")]).toEqual([3 * minute, 2 * minute, minute])
+    // Oldest first: the run opens on model time; the compaction fills the fifth of six minutes.
+    expect(ribbon[0]).toMatchObject({ model: 6 * minute / RIBBON_SLICES, tool: 0 })
+    expect(ribbon.at(-17)!.compact).toBeGreaterThan(0)
+  })
+
+  it("fills every ribbon slice when spans end on awkward boundaries", () => {
+    const entries: unknown[] = [human("go", 0)]
+    // Seven-second spans never line up with the slice width.
+    for (let index = 0; index < 400; index += 1) {
+      entries.push(assistant(`m${index}`, (index * 2 + 1) * (7 / 60), [], { input_tokens: 10, output_tokens: 1 }))
+      entries.push(human("more", (index * 2 + 2) * (7 / 60)))
+    }
+    const ribbon = fold(entries).detail().timing.ribbon
+    expect(ribbon.every((cell) => cell.model > 0)).toBe(true)
+  })
+
+  it("leaves the timing empty without timestamps", () => {
+    const session = new SessionFold("s")
+    session.add({ type: "assistant", message: { id: "m", usage: { input_tokens: 1 } } })
+    expect(session.detail().timing).toEqual({ modelMs: 0, toolMs: 0, compactMs: 0, timedOutput: 0, ribbon: [] })
   })
 })
 

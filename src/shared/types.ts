@@ -57,6 +57,42 @@ export interface RequestPoint {
   readonly output: number
   readonly model: string | null
   readonly tools: readonly string[]
+  /** Time from the entry before this request (a prompt or tool result) to its reply; null when unknown. */
+  readonly latencyMs: number | null
+}
+
+/** How a shell run ended. Background runs return at once and finish out of sight. */
+export type CommandStatus = "ok" | "failed" | "cancelled" | "background" | "running"
+
+export interface CommandRun {
+  readonly id: string
+  /** The command line, cut to a few hundred characters. */
+  readonly command: string
+  readonly programs: readonly string[]
+  readonly at: number
+  /** From the reply that issued the run to its result; null while running. */
+  readonly durationMs: number | null
+  readonly status: CommandStatus
+  readonly exitCode: number | null
+  /** Index of the main-agent request that issued it, counted from the session's first request. */
+  readonly requestIndex: number | null
+  readonly turn: number
+  readonly subagent: boolean
+}
+
+/**
+ * Where the session's active time went, in milliseconds. Model time runs from a prompt or tool
+ * result to the reply; tool time from a reply to its last tool result; compaction time is what the
+ * compactor reported. Gaps waiting for the user aren't counted.
+ */
+export interface TimingStats {
+  readonly modelMs: number
+  readonly toolMs: number
+  readonly compactMs: number
+  /** Output tokens of the timed requests, for an output rate over model time. */
+  readonly timedOutput: number
+  /** The active time in equal slices, oldest first: how much of each slice each kind took. */
+  readonly ribbon: readonly { readonly model: number; readonly tool: number; readonly compact: number }[]
 }
 
 export type ContextEvent =
@@ -84,6 +120,10 @@ export interface SessionDetail {
   readonly requestsTruncated: number
   readonly events: readonly ContextEvent[]
   readonly files: readonly FileActivity[]
+  /** Shell runs, oldest first, main agent and subagents. */
+  readonly commands: readonly CommandRun[]
+  readonly commandsTruncated: number
+  readonly timing: TimingStats
 }
 
 /** `version` identifies the transcript state; pass it back to get `unchanged` until it moves. */

@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react"
+import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type Ref } from "react"
 import { enter, useTweenedNumber } from "./motion.js"
 
 export type Tone = "neutral" | "accent" | "success" | "warning" | "danger"
@@ -27,6 +27,7 @@ export function Card({
   index = 0,
   className,
   style,
+  sectionRef,
   children,
 }: {
   readonly title?: ReactNode
@@ -35,10 +36,11 @@ export function Card({
   readonly index?: number
   readonly className?: string
   readonly style?: CSSProperties
+  readonly sectionRef?: Ref<HTMLElement>
   readonly children: ReactNode
 }) {
   return (
-    <section className={`qc-card qc-enter${className ? ` ${className}` : ""}`} style={{ ...enter(index), ...style }}>
+    <section ref={sectionRef} className={`qc-card qc-enter${className ? ` ${className}` : ""}`} style={{ ...enter(index), ...style }}>
       {title !== undefined ? <SectionHeader title={title} hint={hint} aside={aside} /> : null}
       {children}
     </section>
@@ -259,6 +261,12 @@ const ICONS = {
   chip: "M4.5 4.5h7v7h-7zM6.5 2v2.5M9.5 2v2.5M6.5 11.5V14M9.5 11.5V14M2 6.5h2.5M2 9.5h2.5M11.5 6.5H14M11.5 9.5H14",
   file: "M4 1.8h5l3 3v9.4H4zM9 1.8v3h3",
   gauge: "M2.5 11a5.5 5.5 0 1 1 11 0M8 11l2.5-3.5",
+  pin: "M6 2h4M7 2v4L4.5 9h7L9 6V2M8 9v5",
+  check: "M3.5 8.5l3 3 6-7",
+  clock: "M8 2.5a5.5 5.5 0 1 1 0 11a5.5 5.5 0 1 1 0-11zM8 5v3.2l2.2 1.3",
+  stop: "M8 2.5a5.5 5.5 0 1 1 0 11a5.5 5.5 0 1 1 0-11zM5.5 8h5",
+  layers: "M8 2.5l5.5 3L8 8.5 2.5 5.5zM2.5 8.5L8 11.5l5.5-3",
+  jump: "M5 11l6-6M6 5h5v5",
 } as const
 
 export type IconName = keyof typeof ICONS

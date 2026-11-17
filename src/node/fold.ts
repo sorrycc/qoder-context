@@ -1,5 +1,7 @@
 import { localDay } from "../shared/days.js"
 import type {
+  CommandRun,
+  CommandStatus,
   ContextEvent,
   DayBucket,
   FileActivity,
@@ -7,11 +9,17 @@ import type {
   SessionDetail,
   SessionSummary,
   Tally,
+  TimingStats,
 } from "../shared/types.js"
 
-export const DETAIL_LIMITS = { requests: 800, events: 300, files: 60, tallies: 30 } as const
+export const DETAIL_LIMITS = { requests: 800, events: 300, files: 60, tallies: 30, commands: 300 } as const
 const FILE_TRACK_LIMIT = 2_000
 const EVENT_TEXT_LIMIT = 240
+const COMMAND_TEXT_LIMIT = 240
+/** Slices in the timing ribbon. */
+export const RIBBON_SLICES = 96
+/** A wait longer than this is taken as the machine sleeping or the user away, not work. */
+const SPAN_CAP_MS = 60 * 60_000
 
 const READ_TOOLS = new Set(["Read", "NotebookRead"])
 const WRITE_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"])
@@ -30,6 +38,16 @@ interface MutableRequest {
   output: number
   model: string | null
   tools: string[]
+  latencyMs: number | null
+}
+
+type Mutable<T> = { -readonly [K in keyof T]: T[K] }
+type SpanKind = "model" | "tool" | "compact"
+
+interface Span {
+  readonly kind: SpanKind
+  readonly start: number
+  end: number
 }
 
 class TallyMap {
@@ -78,7 +96,8 @@ export class SessionFold {
   private toolRuns = 0
   private toolErrors = 0
   private subagents = 0
-  private readonly seenMessages = new Set<string>()
+  /** Message id → index of its request in `requests`, or -1 for a subagent's. */
+  private readonly seenMessages = new Map<string, number>()
   private readonly seenToolUses = new Map<string, string>()
   private readonly pendingTools = new Map<string, string[]>()
   private readonly days = new Map<string, { tokens: number; requests: number; turns: number; toolRuns: number }>()
@@ -88,6 +107,14 @@ export class SessionFold {
   private readonly files = new Map<string, { reads: number; writes: number; lastAt: number }>()
   private readonly requests: MutableRequest[] = []
   private events: ContextEvent[] = []
+  private runs: Mutable<CommandRun>[] = []
+  private runsDropped = 0
+  private readonly openRuns = new Map<string, Mutable<CommandRun>>()
+  private readonly spans: Span[] = []
+  /** When the main agent last started waiting on the model (a prompt, tool result or compaction). */
+  private waitingSince: number | null = null
+  private openToolSpan: Span | null = null
+  private timedOutput = 0
 
   constructor(private readonly id: string) {}
 
@@ -124,7 +151,7 @@ export class SessionFold {
         this.addUser(raw, at, main)
         return
       case "assistant":
-        this.addAssistant(raw, at ?? this.lastAt, main)
+        this.addAssistant(raw, at, main)
         return
       case "system":
         this.addSystem(raw, at ?? this.lastAt, main)
@@ -174,6 +201,44 @@ export class SessionFold {
       requestsTruncated: truncated,
       events: this.events.slice(-DETAIL_LIMITS.events),
       files,
+      commands: this.commandRuns(),
+      commandsTruncated: this.runsDropped + Math.max(0, this.runs.length - DETAIL_LIMITS.commands),
+      timing: this.timing(),
+    }
+  }
+
+  private commandRuns(): CommandRun[] {
+    const lastRequestAt = this.requests.at(-1)?.at ?? 0
+    return this.runs.slice(-DETAIL_LIMITS.commands).map((run) =>
+      // A run with no result that a later request moved past was cut off (an interrupt, a crash).
+      run.status === "running" && !run.subagent && run.at < lastRequestAt ? { ...run, status: "cancelled" } : { ...run },
+    )
+  }
+
+  private timing(): TimingStats {
+    const totals = { model: 0, tool: 0, compact: 0 }
+    for (const span of this.spans) totals[span.kind] += spanLength(span)
+    const active = totals.model + totals.tool + totals.compact
+    const ribbon = active > 0 ? Array.from({ length: RIBBON_SLICES }, () => ({ model: 0, tool: 0, compact: 0 })) : []
+    const slice = active / RIBBON_SLICES
+    let offset = 0
+    for (const span of this.spans) {
+      let left = spanLength(span)
+      while (left > 0) {
+        // A hair past a boundary counts as the next slice, so rounding never leaves one empty.
+        const index = Math.min(RIBBON_SLICES - 1, Math.floor((offset + 1e-6) / slice))
+        const take = index === RIBBON_SLICES - 1 ? left : Math.min(left, (index + 1) * slice - offset)
+        ribbon[index]![span.kind] += take
+        offset += take
+        left -= take
+      }
+    }
+    return {
+      modelMs: totals.model,
+      toolMs: totals.tool,
+      compactMs: totals.compact,
+      timedOutput: this.timedOutput,
+      ribbon: ribbon.map((cell) => ({ model: Math.round(cell.model), tool: Math.round(cell.tool), compact: Math.round(cell.compact) })),
     }
   }
 
@@ -194,30 +259,50 @@ export class SessionFold {
       if (at !== null) this.bucket(at).turns += 1
     }
     const message = isRecord(raw.message) ? raw.message : null
-    if (!message || !Array.isArray(message.content)) return
-    for (const block of message.content) {
-      if (!isRecord(block) || block.type !== "tool_result" || block.is_error !== true) continue
-      if (typeof block.tool_use_id === "string" && this.seenToolUses.has(block.tool_use_id)) this.toolErrors += 1
+    const content = message && Array.isArray(message.content) ? message.content : []
+    const results = content.filter((block): block is Json => isRecord(block) && block.type === "tool_result")
+    if (main && at !== null) {
+      // Every prompt, notification or tool result starts a new wait on the model; a tool result
+      // also stretches the running tool span up to it.
+      if (results.length > 0 && this.openToolSpan) this.openToolSpan.end = Math.max(this.openToolSpan.end, at)
+      else this.openToolSpan = null
+      this.waitingSince = at
+    }
+    for (const block of results) {
+      const id = typeof block.tool_use_id === "string" ? block.tool_use_id : null
+      if (block.is_error === true && id && this.seenToolUses.has(id)) this.toolErrors += 1
+      const run = id ? this.openRuns.get(id) : undefined
+      if (!run || !id) continue
+      this.openRuns.delete(id)
+      // toolUseResult describes the entry's result, so it's only trusted when there is one.
+      const outcome = commandOutcome(results.length === 1 ? raw.toolUseResult : null, block.is_error === true)
+      run.status = outcome.status
+      run.exitCode = outcome.exitCode
+      if (at !== null) run.durationMs = Math.max(0, at - run.at)
     }
   }
 
-  private addAssistant(raw: Json, at: number, main: boolean): void {
+  private addAssistant(raw: Json, timestamp: number | null, main: boolean): void {
     const message = isRecord(raw.message) ? raw.message : null
     if (!message) return
+    const at = timestamp ?? this.lastAt
     const messageId = typeof message.id === "string" ? message.id : null
     let pending = messageId ? this.pendingTools.get(messageId) : undefined
     if (!pending) {
       pending = []
       if (messageId) this.pendingTools.set(messageId, pending)
     }
+    // The request this message is (or, until its usage arrives, will be) counted as.
+    const known = messageId ? this.seenMessages.get(messageId) : undefined
+    const requestIndex = main ? (known !== undefined && known >= 0 ? known : this.requests.length) : null
     if (Array.isArray(message.content)) {
       for (const block of message.content) {
-        if (isRecord(block) && block.type === "tool_use") this.addToolUse(block, at, main, pending)
+        if (isRecord(block) && block.type === "tool_use") this.addToolUse(block, at, main, pending, requestIndex)
       }
     }
     const usage = isRecord(message.usage) ? message.usage : null
     if (!usage || (messageId && this.seenMessages.has(messageId))) return
-    if (messageId) this.seenMessages.add(messageId)
+    if (messageId) this.seenMessages.set(messageId, main ? this.requests.length : -1)
     const input = readCount(usage.input_tokens)
     const cacheRead = readCount(usage.cache_read_input_tokens)
     const cacheCreate = readCount(usage.cache_creation_input_tokens)
@@ -239,10 +324,31 @@ export class SessionFold {
     this.contextTokens = prompt
     const ratio = typeof usage.context_usage_ratio === "number" ? usage.context_usage_ratio : 0
     if (ratio > 0 && input > 0) this.derivedWindow = Math.round(input / ratio)
-    this.requests.push({ at, turn: this.turns, prompt, cacheRead, output, model, tools: pending })
+    let latencyMs: number | null = null
+    if (timestamp !== null) {
+      if (this.waitingSince !== null && this.addSpan("model", this.waitingSince, timestamp)) {
+        latencyMs = timestamp - this.waitingSince
+        this.timedOutput += output
+      }
+      this.waitingSince = null
+      this.openToolSpan = null
+      if (pending.length > 0) {
+        this.openToolSpan = { kind: "tool", start: timestamp, end: timestamp }
+        this.spans.push(this.openToolSpan)
+      }
+    }
+    this.requests.push({ at, turn: this.turns, prompt, cacheRead, output, model, tools: pending, latencyMs })
   }
 
-  private addToolUse(block: Json, at: number, main: boolean, pending: string[]): void {
+  /** Records a span unless it is empty, backwards or too long to be work; true when recorded. */
+  private addSpan(kind: SpanKind, start: number, end: number): boolean {
+    const length = end - start
+    if (!(length > 0) || length > SPAN_CAP_MS) return false
+    this.spans.push({ kind, start, end })
+    return true
+  }
+
+  private addToolUse(block: Json, at: number, main: boolean, pending: string[], requestIndex: number | null): void {
     const name = typeof block.name === "string" ? block.name : null
     if (!name) return
     const id = typeof block.id === "string" ? block.id : null
@@ -257,11 +363,25 @@ export class SessionFold {
     const input = isRecord(block.input) ? block.input : {}
     if (name === "Skill" && typeof input.skill === "string") this.skills.add(input.skill, at)
     if (SHELL_TOOLS.has(name) && typeof input.command === "string") {
-      for (const program of commandPrograms(input.command)) this.commands.add(program, at)
+      const programs = commandPrograms(input.command)
+      for (const program of programs) this.commands.add(program, at)
+      if (id) this.addRun({ id, command: input.command.trim().slice(0, COMMAND_TEXT_LIMIT), programs, at, requestIndex, subagent: !main })
     }
     const path =
       typeof input.file_path === "string" ? input.file_path : typeof input.notebook_path === "string" ? input.notebook_path : null
     if (path && (READ_TOOLS.has(name) || WRITE_TOOLS.has(name))) this.addFile(path, WRITE_TOOLS.has(name), at)
+  }
+
+  private addRun(run: Pick<CommandRun, "id" | "command" | "programs" | "at" | "requestIndex" | "subagent">): void {
+    const entry: Mutable<CommandRun> = { ...run, durationMs: null, status: "running", exitCode: null, turn: this.turns }
+    this.runs.push(entry)
+    this.openRuns.set(run.id, entry)
+    if (this.runs.length > DETAIL_LIMITS.commands * 2) {
+      const dropped = this.runs.length - DETAIL_LIMITS.commands
+      for (const old of this.runs.slice(0, dropped)) this.openRuns.delete(old.id)
+      this.runs = this.runs.slice(dropped)
+      this.runsDropped += dropped
+    }
   }
 
   private addFile(path: string, write: boolean, at: number): void {
@@ -300,6 +420,13 @@ export class SessionFold {
       })
       const postTokens = readNullableCount(metadata.postTokens)
       if (postTokens !== null) this.contextTokens = postTokens
+      // The boundary is written when compaction ends; its reported duration ran up to here, but
+      // never further back than the previous span.
+      const durationMs = readNullableCount(metadata.durationMs)
+      const floor = Math.max(this.waitingSince ?? Number.NEGATIVE_INFINITY, this.spans.at(-1)?.end ?? Number.NEGATIVE_INFINITY)
+      if (durationMs) this.addSpan("compact", Math.max(at - durationMs, floor), at)
+      this.openToolSpan = null
+      this.waitingSince = at
       return
     }
     if (raw.subtype === "api_retry" || raw.subtype === "api_error" || raw.subtype === "error") {
@@ -316,6 +443,27 @@ export class SessionFold {
     this.events.push(event)
     if (this.events.length > DETAIL_LIMITS.events * 2) this.events = this.events.slice(-DETAIL_LIMITS.events)
   }
+}
+
+/**
+ * How a shell run ended, from its tool result. A non-zero exit that the tool explains (grep's
+ * "No matches found") is not a failure.
+ */
+export function commandOutcome(result: unknown, isError: boolean): { readonly status: CommandStatus; readonly exitCode: number | null } {
+  const info = isRecord(result) ? result : {}
+  const exitCode = typeof info.exitCode === "number" && Number.isFinite(info.exitCode) ? info.exitCode : null
+  if (info.kind === "cancelled" || info.interrupted === true || (info.kind === "tool-status" && info.status === "cancelled")) {
+    return { status: "cancelled", exitCode }
+  }
+  if (info.kind === "backgrounded" || (info.kind === undefined && typeof info.taskId === "string" && !isError)) {
+    return { status: "background", exitCode }
+  }
+  if (isError || (exitCode !== null && exitCode !== 0 && typeof info.returnCodeInterpretation !== "string")) return { status: "failed", exitCode }
+  return { status: "ok", exitCode }
+}
+
+function spanLength(span: Span): number {
+  return span.end - span.start
 }
 
 /** Distinct program names a shell command line runs, e.g. `cd x && npm test | tee` → npm, tee. */
