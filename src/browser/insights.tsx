@@ -80,7 +80,7 @@ function Insights({ context, t }: { readonly context: PluginViewContext; readonl
         </div>
         <div className="qc-actions">
           <Segmented className="qc-range" label={t("rangeLabel")} value={range} options={rangeOptions} onChange={setRange} />
-          <Button variant="secondary" size="sm" disabled={overview.loading} onClick={overview.reload}>
+          <Button variant="outline" size="sm" disabled={overview.loading} onClick={overview.reload}>
             <span className="qc-button-label">
               {overview.loading && data ? <Spinner /> : null}
               {overview.loading && data ? t("loading") : t("refresh")}
@@ -89,12 +89,16 @@ function Insights({ context, t }: { readonly context: PluginViewContext; readonl
         </div>
       </header>
       {overview.error && !data ? (
-        <div className="qc-empty">
-          <p className="qc-error">{t("loadFailed")}</p>
-          <Button variant="secondary" size="sm" onClick={overview.reload}>
-            {t("retry")}
-          </Button>
-        </div>
+        <EmptyState
+          icon="alert"
+          title={t("loadFailed")}
+          hint={t("overviewFailedHint")}
+          action={
+            <Button variant="secondary" size="sm" onClick={overview.reload}>
+              {t("retry")}
+            </Button>
+          }
+        />
       ) : data ? (
         <Dashboard context={context} data={data} t={t} />
       ) : (
@@ -197,11 +201,11 @@ const Dashboard = memo(function Dashboard({ context, data, t }: { readonly conte
           value={shellRate}
           format={formatRatio}
           tone={shellRate !== null && shellRate >= 0.2 ? "danger" : shellRate !== null && shellRate >= 0.1 ? "warning" : "neutral"}
-          sub={shellRate === null ? t("kpiFailNone") : t("kpiFailSub", { failed: kpi.shellFailures.toLocaleString(), runs: kpi.shellRuns.toLocaleString() })}
+          sub={shellRate === null ? t("kpiFailNone") : t("kpiFailSub", { failed: kpi.shellFailures, count: kpi.shellRuns })}
         />
       </div>
       <div className="qc-grid qc-two">
-        <Card index={8} title={t("weekTitle")}>
+        <Card index={8} title={t("weekTitle")} className="qc-week-card">
           <WeekBars days={data.week} locale={context.locale} t={t} />
         </Card>
         <Card index={9} title={t("heatmapTitle")} hint={t("heatmapHint")}>
@@ -281,7 +285,7 @@ const Dashboard = memo(function Dashboard({ context, data, t }: { readonly conte
             hint={filtered ? t("noSessionsHint") : undefined}
             action={
               filtered ? (
-                <Button variant="secondary" size="sm" onClick={clearAll}>
+                <Button variant="outline" size="sm" onClick={clearAll}>
                   {t("clearAll")}
                 </Button>
               ) : undefined

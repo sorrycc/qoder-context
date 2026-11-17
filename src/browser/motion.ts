@@ -2,6 +2,9 @@ import { useEffect, useRef, useState, type CSSProperties } from "react"
 
 /** Mirrors `--qc-dur-number` in styles.ts. */
 export const NUMBER_MS = 600
+/** Mirror `--qc-dur-slow` and `--qc-ease-out`, for Web Animations. */
+export const SLIDE_MS = 360
+export const EASE_OUT = "cubic-bezier(0.22, 1, 0.36, 1)"
 
 export function prefersReducedMotion(): boolean {
   return globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false

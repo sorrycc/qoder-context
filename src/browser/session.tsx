@@ -335,7 +335,7 @@ function ContextCard({ gauge, t }: { readonly gauge: Gauge; readonly t: Translat
       </div>
       {gauge.requestsLeft !== null && gauge.headroom ? (
         <p className="qc-context-note" data-tone={tone}>
-          {tone === "neutral" ? t("requestsLeft", { count: gauge.requestsLeft.toLocaleString() }) : t("nearFull", { count: gauge.requestsLeft.toLocaleString() })}
+          {tone === "neutral" ? t("requestsLeft", { count: gauge.requestsLeft }) : t("nearFull", { count: gauge.requestsLeft })}
         </p>
       ) : null}
     </Card>
@@ -744,8 +744,8 @@ function Timing({ detail, t }: { readonly detail: SessionDetail; readonly t: Tra
   const tip = useChartTip()
   const hover = useHoverTip(tip, 200)
   const subs: Record<TimingPart["kind"], string> = {
-    model: t("timingModelSub", { count: counts.model.toLocaleString() }),
-    tool: t("timingToolsSub", { count: counts.tool.toLocaleString() }),
+    model: t("timingModelSub", { count: counts.model }),
+    tool: t("timingToolsSub", { count: counts.tool }),
     compact: t("timingCompactSub", { count: counts.compact.toLocaleString() }),
   }
   return (
@@ -754,7 +754,7 @@ function Timing({ detail, t }: { readonly detail: SessionDetail; readonly t: Tra
       title={t("timingTitle")}
       hint={activeMs > 0 ? t("timingHint") : undefined}
       aside={
-        rate !== null ? (
+        rate !== null && Math.round(rate) > 0 ? (
           <span className="qc-tip-host" ref={tip.hostRef} {...hover}>
             <span className="qc-badge qc-rate" tabIndex={0} data-qc-tip={0} aria-describedby={tip.id}>
               {t("timingRate", { rate: Math.round(rate).toLocaleString() })}

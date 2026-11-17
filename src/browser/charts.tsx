@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react"
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react"
 import { localDay } from "../shared/days.js"
 import { formatPercent, formatTokens } from "../shared/format.js"
 import type { ContextEvent, DayBucket, RequestPoint } from "../shared/types.js"
@@ -39,19 +39,40 @@ export function labelEvery(slotPx: number, minPx: number): number {
   return [1, 2, 5, 10, 20, 25, 50, 100, 200, 500].find((step) => step >= needed) ?? 1000
 }
 
+/** The element's content width in px, tracked with a ResizeObserver; `fallback` until measured. */
+function useWidth(ref: { readonly current: HTMLElement | null }, fallback: number): number {
+  const [width, setWidth] = useState(fallback)
+  useLayoutEffect(() => {
+    const node = ref.current
+    if (!node) return
+    const measure = () => setWidth((previous) => (node.clientWidth > 0 ? node.clientWidth : previous))
+    measure()
+    if (typeof ResizeObserver === "undefined") return
+    const observer = new ResizeObserver(measure)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [ref])
+  return width
+}
+
+/** Widest a 7-day bar gets, so wide layouts add air between bars instead of fattening them. */
+const WEEK_BAR_MAX = 40
+
 export const WeekBars = /* @__PURE__ */ memo(function WeekBars({ days, locale, t }: { readonly days: readonly DayBucket[]; readonly locale: string; readonly t: Translate }) {
   const tip = useChartTip()
-  const width = 320
+  // Drawn at the host's pixel width (not a stretched viewBox), so labels keep their size at any width.
+  const width = useWidth(tip.hostRef, 320)
   const height = 112
   const top = 16
   const max = Math.max(1, ...days.map((day) => day.tokens))
   const slot = width / Math.max(1, days.length)
+  const barWidth = Math.min(slot * 0.56, WEEK_BAR_MAX)
   const today = localDay(Date.now())
   const active = tip.active === null ? undefined : days[tip.active]
   return (
     <div className="qc-tip-host" ref={tip.hostRef}>
       <svg
-        className="qc-svg qc-chart"
+        className="qc-svg qc-chart qc-week"
         viewBox={`0 ${-top} ${width} ${height + top + 18}`}
         role="img"
         aria-label={t("weekTitle")}
@@ -59,20 +80,25 @@ export const WeekBars = /* @__PURE__ */ memo(function WeekBars({ days, locale, t
         {...tip.keyboard(days.length)}
       >
         <line className="qc-axis" x1={0} x2={width} y1={height + 0.5} y2={height + 0.5} />
+        {days.every((day) => day.tokens === 0) ? (
+          <text className="qc-fade" x={width / 2} y={height / 2} textAnchor="middle">
+            {t("noActivity")}
+          </text>
+        ) : null}
         {days.map((day, index) => {
           const barHeight = (day.tokens / max) * height
           const isActive = tip.active === index
           const cx = index * slot + slot / 2
           return (
             <g key={day.day} data-active={isActive || undefined} onPointerEnter={() => tip.show(index)}>
-              <rect className="qc-band" x={index * slot + 2} y={-top} width={slot - 4} height={height + top} rx={6} />
+              <rect className="qc-band" x={cx - Math.min(slot - 4, barWidth + 16) / 2} y={-top} width={Math.min(slot - 4, barWidth + 16)} height={height + top} rx={6} />
               <rect
                 className="qc-bar qc-grow-y"
                 style={enter(index)}
                 data-qc-tip={index}
-                x={index * slot + slot * 0.22}
+                x={cx - barWidth / 2}
                 y={height - barHeight}
-                width={slot * 0.56}
+                width={barWidth}
                 height={Math.max(barHeight, day.tokens > 0 ? 2 : 0)}
                 rx={3}
                 fill="var(--qc-accent)"
@@ -577,7 +603,9 @@ export function RequestTrend({
   const bar = Math.max(4, Math.min(18, 640 / Math.max(1, requests.length)))
   const gap = bar > 6 ? 2 : 1
   const pitch = bar + gap
-  const width = Math.max(240, requests.length * pitch)
+  // Gridlines and the axis span at least the visible plot, even with only a few requests.
+  const visible = useWidth(scrollRef, 240 + pad * 2) - pad * 2
+  const width = Math.max(240, visible, requests.length * pitch)
   const deltas = useMemo(() => promptDeltas(requests), [requests])
   const geometry = useMemo(
     () => (mode === "delta" ? deltaGeometry(deltas, height) : { ...totalGeometry(requests, window, height), floor: Number.NEGATIVE_INFINITY }),

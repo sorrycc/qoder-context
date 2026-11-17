@@ -28,7 +28,26 @@ A Qoder Desktop App Plugin for context and token insight, in the spirit of
   step through days or requests; in the heatmap, Up/Down move by day, Left/Right by week, and Enter
   filters by the focused day.
 
-UI is in English and Simplified Chinese and follows the host language and theme.
+UI is in English and Simplified Chinese and follows the host language and theme. English counts
+pluralize ("1 turn", "2 turns") and numbers, dates and times are formatted in the host language.
+
+## A quick tour
+
+Context Insights, top to bottom: the title row with the range switch (Today / 7 days / 30 days) and
+Refresh; eight KPI tiles (four across, two across in a narrow sidebar, eight across on wide screens);
+the 7-day bars beside the 8-week heatmap; Workspaces beside the token composition donut; the tool,
+skill and command tallies; then the session cards, grouped under sticky day or folder headers, with
+search and sort.
+
+The per-session Context view opens with the context ring and its KPI tiles, then the per-request
+trend (pin a bar to see its details), Timing beside Context events, File activity beside Tools, and
+Command executions across the full width.
+
+Both views use the host's text and background colours, so they match Qoder's light and dark themes
+(checked in a dev Qoder in dark mode). Loading shows skeletons in the final layout; failures and empty
+ranges show an icon, a title, a hint and, where it helps, a Retry button. Motion is limited to
+transforms and opacity (cards rise in, bars grow, numbers count, the segmented controls' highlight
+slides) and is switched off under `prefers-reduced-motion`.
 
 ## Where the data comes from
 
@@ -82,7 +101,21 @@ Limits worth knowing:
 - Active time and shell outcomes are bucketed per day inside each cached session summary, so the
   overview sums them per range without re-reading a transcript.
 - Each view's bundle ships only its own CSS (blocks marked `@view` in `styles.ts` are stripped from
-  the other view at build time).
+  the other view at build time) and only the messages it uses: the build keeps an `i18n.ts` entry
+  when its key appears as a string literal in that view's sources, and refuses `as MessageKey` casts
+  that would hide a key.
+- Measured with `npm run bench` on 401 local transcripts (Apple Silicon, median of 3 runs):
+
+  | Measure | Time |
+  | --- | ---: |
+  | Overview, cold (no cache) | 308 ms |
+  | Overview, warm (disk cache) | 43 ms |
+  | Overview, hot (in memory) | 14 ms |
+  | Session fold, 15 MB transcript | 24 ms |
+  | Session poll, unchanged or one line appended | < 1 ms |
+
+  The longest event-loop stall in any of these was 1 ms. Bundles: `insights.cjs` 72 KB,
+  `session.cjs` 106 KB, `main.cjs` 42 KB (minified, React and the design system come from the host).
 - `npm run bench` measures the scan, polls, payloads and bundle sizes against your own transcripts
   (`node scripts/bench.mjs --root <projects dir> --runs 5` to point it elsewhere).
 
@@ -109,6 +142,16 @@ QODER_APP_PLUGIN_DEV_DIRS=$PWD npm run dev   # from ~/Projects/qoder
 The dev Desktop needs the Qoder checkout's dependencies current (`npm ci` under Node 22, as pinned
 by its `engines`) and a sign-in in the dev window; the dev instance keeps its own sessions, so start a
 conversation there to see the per-session view.
+
+To inspect the dev window over the Chrome DevTools Protocol, start the desktop workspace directly
+with a debugging port (from the Qoder checkout, under Node 22):
+
+```sh
+QODER_APP_PLUGIN_DEV_DIRS=~/Projects/qoder-context \
+  npm run dev -w @qoder-space/desktop -- -- --remote-debugging-port=9333
+```
+
+The views render inside a shadow root, so reach `.qc-root` through the host element's `shadowRoot`.
 
 A packaged Qoder only loads them when started with `QODER_APP_PLUGIN_ALLOW_UNVERIFIED=true`:
 

@@ -1,6 +1,6 @@
 {
   "name": "qoder-context",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Qoder Desktop App Plugin for context and token insight across sessions.",
   "type": "module",

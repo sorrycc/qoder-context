@@ -1,3 +1,6 @@
+/** A message that varies with `{count}`, picked by Intl.PluralRules (English needs one/other). */
+type Plural = { readonly one: string; readonly other: string }
+
 const en = {
   insightsTitle: "Context Insights",
   insightsSubtitle: "Token usage across your Qoder sessions, read from local transcripts",
@@ -32,11 +35,11 @@ const en = {
   clearFilter: "Clear",
   filteredBy: "Filtered by",
   noSessions: "No sessions match",
-  moreSessions: "{count} older sessions not shown",
+  moreSessions: { one: "{count} older session not shown", other: "{count} older sessions not shown" },
   untitled: "Untitled session",
-  turnsShort: "{count} turns",
+  turnsShort: { one: "{count} turn", other: "{count} turns" },
   openFailed: "This session isn't available in Qoder (it may be CLI-only or archived).",
-  scanned: "{count} transcripts scanned",
+  scanned: { one: "{count} transcript scanned", other: "{count} transcripts scanned" },
   estimateNote: "Tool, skill and command counts cover the whole lifetime of sessions active in the range.",
   sessionTitle: "Context",
   unbound: "Open this view from a conversation's Task Monitor.",
@@ -46,7 +49,7 @@ const en = {
   statTokens: "Billed tokens",
   statCacheHit: "Cache hit",
   statToolRuns: "Tool runs",
-  statToolErrors: "{count} errors",
+  statToolErrors: { one: "{count} error", other: "{count} errors" },
   statCompactions: "Compactions",
   statSubagents: "Subagents",
   statSpan: "Span",
@@ -98,6 +101,7 @@ const en = {
   lastActive: "Last active",
   contextNow: "Context",
   loadFailedHint: "The transcript couldn't be read. It may be busy; try again in a moment.",
+  overviewFailedHint: "Local transcripts couldn't be read. Try again in a moment.",
   missingHint: "It appears after the first model reply.",
   liveUpdated: "Updated {time}",
   refreshFailed: "Refresh failed · showing earlier data",
@@ -111,8 +115,14 @@ const en = {
   windowFull: "Full",
   pace: "Growth",
   paceValue: "+{tokens} / request",
-  requestsLeft: "At this pace, about {count} more requests fit before the window is full.",
-  nearFull: "Nearly full: about {count} more requests before a compaction is likely.",
+  requestsLeft: {
+    one: "At this pace, about {count} more request fits before the window is full.",
+    other: "At this pace, about {count} more requests fit before the window is full.",
+  },
+  nearFull: {
+    one: "Nearly full: about {count} more request before a compaction is likely.",
+    other: "Nearly full: about {count} more requests before a compaction is likely.",
+  },
   triggerManual: "manual",
   triggerAuto: "auto",
   triggerUnknown: "unknown",
@@ -153,8 +163,8 @@ const en = {
   timingModel: "Model",
   timingTools: "Tools",
   timingCompaction: "Compaction",
-  timingModelSub: "{count} requests",
-  timingToolsSub: "{count} tool runs",
+  timingModelSub: { one: "{count} request", other: "{count} requests" },
+  timingToolsSub: { one: "{count} tool run", other: "{count} tool runs" },
   timingCompactSub: "×{count}",
   timingRate: "≈{rate} tok/s",
   timingRateHint: "Output tokens per second of model time. Model time includes reading the prompt and thinking, so this runs below the model's raw speed.",
@@ -200,7 +210,7 @@ const en = {
   kpiActive: "Active time",
   kpiActiveSub: "≈{per} per session",
   kpiFailRate: "Command failures",
-  kpiFailSub: "{failed} of {runs} runs",
+  kpiFailSub: { one: "{failed} of {count} run", other: "{failed} of {count} runs" },
   kpiFailNone: "No finished commands",
   workspacesTitle: "Workspaces",
   workspacesHint: "Click a folder to filter sessions",
@@ -224,7 +234,7 @@ const en = {
   eventsErrors: "Errors",
 }
 
-type Messages = typeof en
+type Messages = { readonly [K in keyof typeof en]: string | Plural }
 
 const zh: Messages = {
   insightsTitle: "上下文洞察",
@@ -258,7 +268,7 @@ const zh: Messages = {
   sortTokens: "Token",
   sortContext: "上下文",
   clearFilter: "清除",
-  filteredBy: "筛选",
+  filteredBy: "筛选条件",
   noSessions: "没有匹配的会话",
   moreSessions: "另有 {count} 个较早会话未显示",
   untitled: "未命名会话",
@@ -310,7 +320,7 @@ const zh: Messages = {
   yesterday: "昨天",
   showAll: "显示全部 {count} 项",
   showLess: "收起",
-  showMore: "再显示 {count} 个",
+  showMore: "再显示 {count} 项",
   tallyRuns: "次数",
   tallySessions: "会话",
   tallyLastUsed: "最近使用",
@@ -326,6 +336,7 @@ const zh: Messages = {
   lastActive: "最近活跃",
   contextNow: "上下文",
   loadFailedHint: "无法读取会话记录，可能正被占用，请稍后再试。",
+  overviewFailedHint: "无法读取本地会话记录，请稍后再试。",
   missingHint: "模型首次回复后会出现。",
   liveUpdated: "{time}更新",
   refreshFailed: "刷新失败 · 显示之前的数据",
@@ -348,7 +359,7 @@ const zh: Messages = {
   eventWhen: "时间",
   eventFirst: "首次",
   eventPosition: "位置",
-  afterRequest: "第 #{index} 次请求之后",
+  afterRequest: "请求 #{index} 之后",
   sessionStart: "会话开始时",
   occurrences: "次数",
   compactBefore: "压缩前",
@@ -405,7 +416,7 @@ const zh: Messages = {
   runsFailedRate: "占已结束的 {rate}",
   runsTotalTime: "总耗时",
   runsBackgroundSub: "立即返回",
-  runsAttention: "关注",
+  runsAttention: "需关注",
   runsSlowestRun: "最慢",
   runsLastFailure: "最近失败",
   runsPrograms: "程序",
@@ -428,11 +439,11 @@ const zh: Messages = {
   kpiActive: "活跃时长",
   kpiActiveSub: "平均每会话 {per}",
   kpiFailRate: "命令失败率",
-  kpiFailSub: "失败 {failed} / {runs} 次",
+  kpiFailSub: "失败 {failed} / {count} 次",
   kpiFailNone: "暂无已结束的命令",
   workspacesTitle: "工作区",
   workspacesHint: "点击文件夹筛选会话",
-  emptyWorkspaces: "此范围内没有项目文件夹",
+  emptyWorkspaces: "该范围内没有项目文件夹",
   groupLabel: "会话分组",
   groupDate: "日期",
   groupWorkspace: "文件夹",
@@ -458,9 +469,20 @@ export type Translate = ((key: MessageKey, values?: Readonly<Record<string, stri
 
 export function createTranslate(locale: string): Translate {
   const messages = locale.toLowerCase().startsWith("zh") ? zh : en
-  const translate = (key: MessageKey, values?: Readonly<Record<string, string | number>>) =>
-    messages[key].replace(/\{(\w+)\}/g, (match, name: string) => (values && name in values ? String(values[name]) : match))
-  return Object.assign(translate, { locale: supportedLocale(locale) })
+  const resolved = supportedLocale(locale)
+  const plurals = new Intl.PluralRules(resolved)
+  const numbers = new Intl.NumberFormat(resolved)
+  const translate = (key: MessageKey, values?: Readonly<Record<string, string | number>>) => {
+    const message = messages[key]
+    const count = values?.count
+    const text = typeof message === "string" ? message : typeof count === "number" && plurals.select(count) === "one" ? message.one : message.other
+    return text.replace(/\{(\w+)\}/g, (match, name: string) => {
+      const value = values?.[name]
+      // Counts are grouped (1,234); request numbers read as labels (#1234).
+      return value === undefined ? match : typeof value === "number" && name !== "index" ? numbers.format(value) : String(value)
+    })
+  }
+  return Object.assign(translate, { locale: resolved })
 }
 
 /** `locale` when Intl knows it, else the runtime default, so formatting never throws. */
@@ -474,7 +496,7 @@ function supportedLocale(locale: string): string {
 
 /** Wall-clock time in the host language, e.g. 14:03:22. */
 export function clockTime(t: Translate, at: number): string {
-  return new Date(at).toLocaleTimeString(t.locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+  return new Date(at).toLocaleTimeString(t.locale, { hour: "numeric", minute: "2-digit", second: "2-digit" })
 }
 
 /** Date and time in the host language. */

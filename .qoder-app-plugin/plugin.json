@@ -1,7 +1,7 @@
 {
   "id": "community.context-insights",
   "name": "context-insights",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "engines": {
     "qoder": ">=0.5.0"
   },

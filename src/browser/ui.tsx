@@ -1,5 +1,5 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type Ref } from "react"
-import { enter, useTweenedNumber } from "./motion.js"
+import { EASE_OUT, enter, prefersReducedMotion, SLIDE_MS, useTweenedNumber } from "./motion.js"
 
 export type Tone = "neutral" | "accent" | "success" | "warning" | "danger"
 
@@ -122,24 +122,34 @@ export function Segmented<T extends string>({
 }) {
   const groupRef = useRef<HTMLDivElement | null>(null)
 
+  const placed = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
+
   useLayoutEffect(() => {
     const group = groupRef.current
-    if (!group) return
-    const place = () => {
+    const thumb = group?.querySelector<HTMLElement>(".qc-segment-thumb")
+    if (!group || !thumb) return
+    // The thumb takes its new size at once; only its transform animates, from the old box (FLIP).
+    const place = (slide: boolean) => {
       const chosen = group.querySelector<HTMLElement>('[aria-checked="true"]')
       if (!chosen) return
-      group.style.setProperty("--qc-thumb-x", `${chosen.offsetLeft}px`)
-      group.style.setProperty("--qc-thumb-y", `${chosen.offsetTop}px`)
-      group.style.setProperty("--qc-thumb-w", `${chosen.offsetWidth}px`)
-      group.style.setProperty("--qc-thumb-h", `${chosen.offsetHeight}px`)
-      if (!group.dataset.measured) {
-        group.dataset.measured = "true"
-        // Slide only after the first placement, so the thumb never sweeps in from the corner.
-        requestAnimationFrame(() => (group.dataset.animate = "true"))
-      }
+      const next = { x: chosen.offsetLeft, y: chosen.offsetTop, w: chosen.offsetWidth, h: chosen.offsetHeight }
+      const from = placed.current
+      placed.current = next
+      thumb.style.width = `${next.w}px`
+      thumb.style.height = `${next.h}px`
+      thumb.style.transform = `translate(${next.x}px, ${next.y}px)`
+      group.dataset.measured = "true"
+      if (!slide || !from || next.w === 0 || (from.x === next.x && from.w === next.w) || prefersReducedMotion() || !thumb.animate) return
+      thumb.animate(
+        [
+          { transform: `translate(${from.x}px, ${from.y}px) scale(${from.w / next.w}, ${from.h / next.h})` },
+          { transform: `translate(${next.x}px, ${next.y}px)` },
+        ],
+        { duration: SLIDE_MS, easing: EASE_OUT },
+      )
     }
-    place()
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place)
+    place(true)
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => place(false))
     observer?.observe(group)
     return () => observer?.disconnect()
   }, [value, options])

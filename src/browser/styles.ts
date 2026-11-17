@@ -21,10 +21,11 @@
  *           Classes: .qc-enter (fade + rise on mount, stagger with --qc-i), .qc-grow-y (SVG bars
  *           grow from their base), .qc-fill-in (meters sweep in from the left), .qc-pressable
  *           (hover lift + press). Numbers ease via AnimatedNumber/useTweenedNumber (motion.ts).
- *           Animate transform and opacity only (the tooltip glides with \`translate\`), so motion
+ *           Animate transform and opacity only (the tooltip glides with \`translate\`; the Segmented
+ *           thumb takes its new size at once and slides from its old box with a Web Animation), so motion
  *           stays on the compositor. All motion is dropped under prefers-reduced-motion, except
  *           the busy spinner. Session tiles use content-visibility, so offscreen ones skip rendering.
- * Layout    .qc-grid + .qc-kpis (.qc-kpis-8: 4 or 8 across) / .qc-two / .qc-split (3:2) / .qc-four; components in ui.tsx (Card, SectionHeader,
+ * Layout    .qc-grid + .qc-kpis (.qc-kpis-8: 2, 4 or 8 across) / .qc-two / .qc-split (3:2) / .qc-four; components in ui.tsx (Card, SectionHeader,
  *           Kpi, Skeleton, Spinner, Segmented, Collapse, CappedList, EmptyState, Icon). The session
  *           view adds .qc-pairs (at most two columns), .qc-hero (ContextRing card + KPIs),
  *           .qc-timeline (events), .qc-row (static tally rows), .qc-pin-strip (pinned trend request),
@@ -152,10 +153,9 @@ export const STYLES = `
 .qc-segment button { position: relative; z-index: 1; border: 0; background: transparent; color: var(--qc-text-2); padding: 3px 10px; border-radius: var(--qc-radius-sm); font: inherit; font-size: var(--qc-font-sm); white-space: nowrap; cursor: pointer; transition: color var(--qc-dur-base) var(--qc-ease-out), transform var(--qc-dur-fast) var(--qc-ease-out); }
 .qc-segment button:hover, .qc-segment button[aria-checked="true"] { color: var(--qc-text); }
 .qc-segment button:active { transform: scale(0.96); }
-.qc-segment-thumb { position: absolute; left: 0; top: 0; z-index: 0; width: var(--qc-thumb-w, 0); height: var(--qc-thumb-h, 0); transform: translate(var(--qc-thumb-x, 0), var(--qc-thumb-y, 0)); border-radius: var(--qc-radius-sm); background: var(--qc-raised); box-shadow: var(--qc-shadow-1), 0 0 0 1px var(--qc-border); opacity: 0; pointer-events: none; }
+.qc-segment-thumb { position: absolute; left: 0; top: 0; z-index: 0; width: 0; height: 0; transform-origin: 0 0; border-radius: var(--qc-radius-sm); background: var(--qc-raised); box-shadow: var(--qc-shadow-1), 0 0 0 1px var(--qc-border); opacity: 0; pointer-events: none; }
 .qc-segment[data-measured] .qc-segment-thumb { opacity: 1; }
 .qc-root[data-qc-scheme="dark"] .qc-segment-thumb { background: color-mix(in srgb, var(--qc-text) 16%, var(--qc-card)); box-shadow: 0 0 0 1px var(--qc-border-strong); }
-.qc-segment[data-animate] .qc-segment-thumb { transition: transform var(--qc-dur-slow) var(--qc-ease-out), width var(--qc-dur-slow) var(--qc-ease-out); }
 .qc-segment:not([data-measured]) button[aria-checked="true"] { background: var(--qc-raised); box-shadow: var(--qc-shadow-1), 0 0 0 1px var(--qc-border); }
 
 /* Layout */
@@ -200,6 +200,7 @@ export const STYLES = `
 /* Charts */
 .qc-svg { display: block; width: 100%; height: auto; overflow: visible; }
 .qc-svg text, .qc-trend text, .qc-trend-axis text { fill: var(--qc-text-3); font-size: 10px; font-variant-numeric: tabular-nums; }
+.qc-svg.qc-week text { font-size: var(--qc-font-xs); }
 .qc-chart { outline: none; }
 .qc-chart:focus-visible { outline: 2px solid var(--qc-accent); outline-offset: 4px; border-radius: var(--qc-radius-sm); }
 .qc-axis { stroke: var(--qc-border-strong); }
@@ -219,6 +220,8 @@ g[data-active] > .qc-band, .qc-trend-band { opacity: 1; }
 .qc-swatch-rule { width: 2px; height: 11px; border-radius: 0; background: repeating-linear-gradient(var(--qc-warning) 0 3px, transparent 3px 5px); }
 
 /* @view insights */
+.qc-week-card { display: flex; flex-direction: column; }
+.qc-week-card > .qc-tip-host { margin-top: auto; }
 /* Donut */
 .qc-donut { display: flex; align-items: center; gap: var(--qc-space-4); }
 .qc-donut svg { width: 104px; height: 104px; flex: none; overflow: visible; }
@@ -382,7 +385,6 @@ g[data-active] > .qc-band, .qc-trend-band { opacity: 1; }
 .qc-meter-lg { height: 14px; border-radius: var(--qc-radius-sm); margin: var(--qc-space-2) 0 6px; }
 
 .qc-error { color: var(--qc-danger-ink); font-size: var(--qc-font-sm); }
-.qc-empty { padding: var(--qc-space-8) 0; text-align: center; color: var(--qc-text-3); display: flex; flex-direction: column; align-items: center; gap: var(--qc-space-2); }
 .qc-empty-state { display: flex; flex-direction: column; align-items: center; gap: var(--qc-space-1); padding: var(--qc-space-8) var(--qc-space-4); text-align: center; color: var(--qc-text-3); font-size: var(--qc-font-sm); animation: qc-fade var(--qc-dur-slow) var(--qc-ease-out) backwards; }
 .qc-empty-state[data-compact] { padding: var(--qc-space-4) var(--qc-space-2); }
 .qc-empty-icon { display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: var(--qc-space-1); border-radius: 50%; background: var(--qc-fill-2); color: var(--qc-text-2); }
@@ -417,6 +419,7 @@ g[data-active] > .qc-band, .qc-trend-band { opacity: 1; }
 .qc-hero { grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); align-items: stretch; }
 .qc-root .qc-hero .qc-kpis { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); align-content: start; margin: 0; }
 .qc-root[data-qc-width="narrow"] .qc-hero .qc-kpis { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+.qc-root[data-qc-width="wide"] .qc-hero .qc-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); align-content: stretch; }
 .qc-context-card { container-type: inline-size; }
 .qc-context { display: flex; align-items: center; gap: var(--qc-space-5); }
 .qc-ring { position: relative; flex: none; width: 132px; height: 132px; }
@@ -561,6 +564,7 @@ g[data-active] > .qc-band, .qc-trend-band { opacity: 1; }
 .qc-root[data-qc-width="narrow"] .qc-range { flex: 1; }
 .qc-root[data-qc-width="narrow"] .qc-range button, .qc-root[data-qc-width="narrow"] .qc-toolbar .qc-segment button { flex: 1; }
 .qc-root[data-qc-width="narrow"] .qc-kpis { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: var(--qc-space-2); }
+.qc-root[data-qc-width="narrow"] .qc-kpis-8 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .qc-root[data-qc-width="narrow"] .qc-kpi { padding: 10px var(--qc-space-3); }
 .qc-root[data-qc-width="narrow"] .qc-kpi-value { font-size: var(--qc-font-xl); }
 .qc-root[data-qc-width="narrow"] .qc-search { flex-basis: 100%; }
