@@ -11,6 +11,9 @@ A Qoder Desktop App Plugin for context and token insight, in the spirit of
   stats, the current context against the model window, a per-request stacked trend with compaction
   markers, context events (compactions, retries, errors), file activity, tools and commands.
   It refreshes every 15 s while visible.
+- Charts show a tooltip on hover. Focus a chart (Tab) and use the arrow keys, Home and End to
+  step through days or requests; in the heatmap, Up/Down move by day, Left/Right by week, and Enter
+  filters by the focused day.
 
 UI is in English and Simplified Chinese and follows the host language and theme.
 

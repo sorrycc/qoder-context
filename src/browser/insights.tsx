@@ -116,15 +116,22 @@ function Dashboard({ context, data, t }: { readonly context: PluginViewContext; 
       </div>
       <div className="qc-grid qc-two">
         <Card index={6} title={t("weekTitle")}>
-          <WeekBars days={data.week} locale={context.locale} />
+          <WeekBars days={data.week} locale={context.locale} t={t} />
         </Card>
         <Card index={7} title={t("heatmapTitle")} hint={t("heatmapHint")}>
-          <Heatmap cells={data.heatmap} selected={filter.day} onSelect={(day) => setFilter((current) => ({ ...current, day }))} />
+          <Heatmap
+            cells={data.heatmap}
+            selected={filter.day}
+            onSelect={(day) => setFilter((current) => ({ ...current, day }))}
+            locale={context.locale}
+            t={t}
+          />
         </Card>
       </div>
       <div className="qc-grid qc-four">
         <Card index={8} title={t("compositionTitle")}>
           <Donut
+            t={t}
             parts={[
               { label: t("cacheRead"), value: data.composition.cacheRead, color: SERIES.cacheRead },
               { label: t("uncached"), value: data.composition.uncached, color: SERIES.uncached },

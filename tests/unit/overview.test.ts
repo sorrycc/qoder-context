@@ -50,7 +50,7 @@ describe("aggregate", () => {
     expect(overview.kpi.toolRuns).toBe(2)
     expect(overview.kpi.cacheHitRate).toBeCloseTo(0.6)
     expect(overview.week.at(-1)).toMatchObject({ day: today, tokens: 50 })
-    expect(overview.heatmap.find((cell) => cell.day === old)?.tokens).toBe(16)
+    expect(overview.heatmap.find((cell) => cell.day === old)).toMatchObject({ tokens: 16, requests: 2 })
     expect(overview.sessions.map((card) => card.id)).toEqual(["recent"])
     expect(overview.tools).toEqual([{ name: "Bash", count: 2, lastAt: T0 }])
   })
@@ -77,7 +77,8 @@ describe("OverviewIndex", () => {
     const sessionId = "11111111-2222-3333-4444-555555555555"
     await mkdir(join(project, sessionId, "subagents"), { recursive: true })
     const lines = (entries: unknown[]) => entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n"
-    const now = Date.now()
+    // Local noon, so "today" holds the entries whatever time the suite runs.
+    const now = new Date().setHours(12, 0, 0, 0)
     const minute = (offset: number) => (now - T0) / 60_000 - offset
     await writeFile(
       join(project, `${sessionId}.jsonl`),

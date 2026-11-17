@@ -55,7 +55,7 @@ const en = {
   currentOfWindow: "of {window} window",
   windowUnknown: "Context window unknown",
   trendTitle: "Per-request context",
-  trendHint: "One bar per model request; dashed lines mark compactions",
+  trendHint: "One bar per model request; ✂ marks a compaction. Hover or use arrow keys for details",
   trendTruncated: "Showing the latest {shown} of {total} requests",
   eventsTitle: "Context events",
   eventsEmpty: "No compactions, retries or errors",
@@ -74,6 +74,15 @@ const en = {
   minutesAgo: "{count}m ago",
   hoursAgo: "{count}h ago",
   daysAgo: "{count}d ago",
+  heatLess: "Less",
+  heatMore: "More",
+  heatClickToFilter: "Click to filter sessions",
+  heatClickToClear: "Click again to clear the filter",
+  noActivity: "No activity",
+  windowLabel: "{window} window",
+  compactionLegend: "Compaction",
+  promptTotal: "Prompt",
+  promptOfWindow: "Prompt · of window",
 }
 
 type Messages = typeof en
@@ -135,7 +144,7 @@ const zh: Messages = {
   currentOfWindow: "占 {window} 窗口",
   windowUnknown: "上下文窗口未知",
   trendTitle: "逐请求上下文",
-  trendHint: "每根柱子是一次模型请求；虚线标记压缩",
+  trendHint: "每根柱子是一次模型请求；✂ 标记压缩。悬停或用方向键查看详情",
   trendTruncated: "显示最近 {shown} / {total} 次请求",
   eventsTitle: "上下文事件",
   eventsEmpty: "没有压缩、重试或错误",
@@ -154,6 +163,15 @@ const zh: Messages = {
   minutesAgo: "{count} 分钟前",
   hoursAgo: "{count} 小时前",
   daysAgo: "{count} 天前",
+  heatLess: "少",
+  heatMore: "多",
+  heatClickToFilter: "点击筛选会话",
+  heatClickToClear: "再次点击取消筛选",
+  noActivity: "无活动",
+  windowLabel: "{window} 窗口",
+  compactionLegend: "压缩",
+  promptTotal: "输入",
+  promptOfWindow: "输入 · 占窗口",
 }
 
 export type MessageKey = keyof Messages

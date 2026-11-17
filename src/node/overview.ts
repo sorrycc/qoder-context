@@ -162,7 +162,7 @@ export function aggregate(summaries: readonly SessionSummary[], range: Range, no
       const bucket = byDay.get(day)
       return bucket ? { day, ...bucket } : empty(day)
     }),
-    heatmap: heatDays.map((day) => ({ day, tokens: byDay.get(day)?.tokens ?? 0 })),
+    heatmap: heatDays.map((day) => ({ day, tokens: byDay.get(day)?.tokens ?? 0, requests: byDay.get(day)?.requests ?? 0 })),
     composition,
     tools: topTallies(tools),
     skills: topTallies(skills),

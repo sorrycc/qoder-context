@@ -118,7 +118,7 @@ export interface Overview {
     readonly toolRuns: number
   }
   readonly week: readonly DayBucket[]
-  readonly heatmap: readonly { readonly day: string; readonly tokens: number }[]
+  readonly heatmap: readonly { readonly day: string; readonly tokens: number; readonly requests: number }[]
   readonly composition: { readonly cacheRead: number; readonly uncached: number; readonly output: number }
   readonly tools: readonly Tally[]
   readonly skills: readonly Tally[]

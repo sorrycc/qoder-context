@@ -121,7 +121,7 @@ function Detail({ detail, t }: { readonly detail: SessionDetail; readonly t: Tra
           window={summary.contextWindow}
           t={t}
         />
-        <Legend t={t} />
+        <Legend t={t} window={summary.contextWindow} compactions={detail.events.some((event) => event.kind === "compaction")} />
       </Card>
       <div className="qc-grid qc-two">
         <Events events={detail.events} t={t} />
