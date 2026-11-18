@@ -75,6 +75,11 @@ Qoder's plugin API doesn't expose token usage, so the plugin reads qodercli's tr
 Credits are what each request reported, not a bill, and the context composition is an estimate. Sessions on a
 remote SSH host aren't shown. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full list of limits.
 
+## Credits
+
+Inspired by [dsh-context](https://github.com/bowenliang123/dsh-context) by Bowen Liang, the context and token
+insight plugin for DeepSeek Harness.
+
 ## License
 
 [MIT](LICENSE)
