@@ -157,6 +157,8 @@ Unpackaged (dev) Qoder loads unverified plugins from `QODER_APP_PLUGIN_DEV_DIRS`
 `<config root>/app/dev-extensions/`:
 
 ```sh
+scripts/dev.sh             # build, then start the dev Desktop from ~/Projects/qoder (QODER_DIR) with this plugin
+scripts/dev.sh --cdp       # the same with CDP on port 9333; --packaged starts /Applications/Qoder.app
 npm run link-dev           # symlink this repo into ~/.qoder/app/dev-extensions/context-insights
 npm run unlink-dev
 # or, without touching ~/.qoder:
