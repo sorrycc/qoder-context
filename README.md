@@ -53,19 +53,38 @@ Screenshots use synthetic sessions from `scripts/demo-data.mjs`.
 
 ## Installation
 
-Requires Qoder Desktop 0.5 or later and Node.js 22 or later to build. The plugin isn't in a plugin store, so Qoder
-loads it as an unverified plugin. From a clone of this repository:
+Requires Qoder Desktop 0.5 or later, Node.js 22 or later, and git. The plugin isn't in a plugin store, so Qoder
+loads it as an unverified plugin:
 
 ```sh
+git clone https://github.com/sorrycc/qoder-context
+cd qoder-context
 npm install && npm run build
-QODER_APP_PLUGIN_ALLOW_UNVERIFIED=true QODER_APP_PLUGIN_DEV_DIRS=$PWD \
-  /Applications/Qoder.app/Contents/MacOS/Qoder
+npm run link-dev    # for Qoder CN: npm run link-dev -- --cn
 ```
 
-Open **Context Insights** from the lower-left sidebar. In a conversation, open the Task Monitor and click
-**Context** to see that session.
+`link-dev` symlinks `~/.qoder/app/dev-extensions/context-insights` to the clone. Quit Qoder (Cmd+Q), then start it
+from a terminal:
+
+```sh
+QODER_APP_PLUGIN_ALLOW_UNVERIFIED=true /Applications/Qoder.app/Contents/MacOS/Qoder
+```
+
+The variable skips the signature check for that launch only. Starting Qoder from the Dock won't load the plugin, and
+if Qoder is already running the command just switches to that window, so quit it first.
+
+To skip the symlink, start Qoder with `QODER_APP_PLUGIN_DEV_DIRS=$PWD` added to the command above, from the clone.
+
+**Update:** `git pull && npm run build` in the clone, then restart Qoder.
+
+**Uninstall:** `npm run unlink-dev` (add `-- --cn` for Qoder CN), then restart Qoder.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to run it in a dev Qoder or preview the views in a browser.
+
+## Usage
+
+- **Context Insights** in the lower-left sidebar shows every session: tokens, credits, activity and workspaces.
+- In a conversation, open the Task Monitor and click **Context** to see that session's context window.
 
 ## How it works
 
