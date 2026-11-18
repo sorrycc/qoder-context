@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { commandOutcome, commandPrograms, editLines, RIBBON_SLICES, SessionFold } from "../../src/node/fold.js"
+import { agentStatus, commandOutcome, commandPrograms, editLines, estimateTokens, RIBBON_SLICES, SessionFold } from "../../src/node/fold.js"
 import { assistant, at, human, toolResult, toolUse } from "./fixtures.js"
 
 function fold(entries: unknown[], subagents: unknown[][] = []) {
@@ -69,7 +69,7 @@ describe("SessionFold", () => {
     expect(Object.fromEntries(summary.commands.map((tally) => [tally.name, tally.count]))).toEqual({ npm: 1, tee: 1 })
     expect(summary.skills.map((tally) => tally.name).sort()).toEqual(["deploy", "review"])
     expect(session.detail().files).toEqual([
-      { path: "/work/demo/a.ts", reads: 1, writes: 1, added: 0, removed: 0, lastAt: Date.parse(at(3)) },
+      { path: "/work/demo/a.ts", reads: 1, writes: 1, added: 0, removed: 0, searches: 0, image: false, lastAt: Date.parse(at(3)) },
     ])
     expect(session.detail().requests.map((request) => request.tools)).toEqual([["Bash", "Read"], ["Edit", "Skill"]])
   })
@@ -123,6 +123,188 @@ describe("SessionFold", () => {
       { type: "custom-title", customTitle: "Mine" },
     ]).summary()
     expect(summary.title).toBe("Mine")
+  })
+})
+
+describe("credits", () => {
+  it("adds each request's own credits once, leaves non-billable ones at zero and counts what was metered", () => {
+    const session = fold(
+      [
+        human("go", 0),
+        assistant("m1", 1, [], { input_tokens: 10, output_tokens: 1, credits: 0.5, original_credits: 0.8, billable: true }),
+        assistant("m1", 1, [], { input_tokens: 10, output_tokens: 1, credits: 0.5, billable: true }),
+        assistant("m2", 2, [], { input_tokens: 10, output_tokens: 1, credits: 2, billable: false }),
+        assistant("m3", 3, [], { input_tokens: 10, output_tokens: 1 }, { message: { id: "m3", model: "auto", usage: { input_tokens: 10, output_tokens: 1 } } }),
+      ],
+      [[assistant("s1", 4, [], { input_tokens: 5, output_tokens: 1, credits: 0.25 }, { isSidechain: true })]],
+    )
+    const summary = session.summary()
+    expect(summary).toMatchObject({ credits: 0.75, originalCredits: 1.05, metered: 3, requests: 4 })
+    expect(summary.days).toMatchObject([{ credits: 0.75, metered: 3, requests: 4 }])
+    const detail = session.detail()
+    expect(detail.requests.map((request) => request.credits)).toEqual([0.5, 0, null])
+    expect(detail.models).toEqual([
+      { model: "dfmodel", requests: 3, tokens: 28, credits: 0.75, metered: 3 },
+      { model: "auto", requests: 1, tokens: 11, credits: 0, metered: 0 },
+    ])
+  })
+})
+
+describe("day tallies", () => {
+  it("counts tools, skills and commands on the day each ran", () => {
+    const tallies = fold([
+      assistant("m1", 0, [toolUse("t1", "Bash", { command: "npm test" })], { input_tokens: 1 }),
+      assistant("m2", 24 * 60, [toolUse("t2", "Bash", { command: "git log" }), toolUse("t3", "Skill", { skill: "review" })], { input_tokens: 1 }),
+    ]).summary().dayTallies
+    expect(tallies.map((day) => [day.tools.map((tally) => `${tally.name}:${tally.count}`), day.commands.map((tally) => tally.name), day.skills.map((tally) => tally.name)])).toEqual([
+      [["Bash:1"], ["npm"], []],
+      [["Bash:1", "Skill:1"], ["git"], ["review"]],
+    ])
+  })
+})
+
+describe("context events", () => {
+  it("records model and effort switches after the first runtime config, and mode changes once each", () => {
+    const runtime = (minutes: number, model: string, reasoningEffort?: string) => ({ type: "runtime-config", timestamp: at(minutes), model, reasoningEffort, contextWindow: 1_000 })
+    const attachment = (minutes: number, body: Record<string, unknown>) => ({ type: "attachment", timestamp: at(minutes), attachment: body })
+    const events = fold([
+      runtime(0, "dfmodel", "high"),
+      runtime(1, "dfmodel", "high"),
+      runtime(2, "ultimate", "high"),
+      runtime(3, "ultimate"),
+      attachment(4, { type: "plan_mode", isActive: true, reminderType: "full" }),
+      attachment(5, { type: "plan_mode", isActive: true, reminderType: "sparse" }),
+      attachment(6, { type: "plan_mode_exit" }),
+      attachment(7, { type: "auto_mode_exit" }),
+    ]).detail().events
+    expect(events.map((event) => (event.kind === "model" ? `${event.from} → ${event.to}` : event.kind === "mode" ? `${event.mode}:${event.active}` : event.kind))).toEqual([
+      "dfmodel · high → ultimate · high",
+      "ultimate · high → ultimate",
+      "plan:true",
+      "plan:false",
+    ])
+  })
+
+  it("names injected context with its size and items, from the main transcript only", () => {
+    const attachment = (body: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({ type: "attachment", timestamp: at(1), attachment: body, ...extra })
+    const session = fold(
+      [
+        attachment({ type: "skill_listing", content: "- review: reviews code\n- deploy: ships it", names: ["review", "deploy"], skillCount: 2 }),
+        attachment({ type: "relevant_memories", files: [{ filePath: "/repo/AGENTS.md", content: "Use tabs." }] }),
+        attachment({ type: "hook_output", hookEventName: "SessionStart", output: "Remember the house style." }),
+        attachment({ type: "mcp_lazy_tools_delta", content: "Lazy tools are active.", addedNames: ["mcp__a__b", "mcp__a__c"] }),
+        attachment({ type: "file", filename: "/repo/notes.md", content: "notes" }),
+        attachment({ type: "hook_output", hookEventName: "SessionStart", output: "" }),
+        attachment({ type: "task_reminder", content: "todo list" }),
+      ],
+      [[attachment({ type: "hook_output", hookEventName: "SubagentStart", output: "sub" }, { isSidechain: true })]],
+    )
+    const events = session.detail().events
+    expect(events.map((event) => (event.kind === "inject" ? [event.item, event.label, event.count] : null))).toEqual([
+      ["skillList", "review, deploy", 2],
+      ["memory", "AGENTS.md", 1],
+      ["hook", "SessionStart", null],
+      ["mcpTools", "mcp__a__b, mcp__a__c", 2],
+      ["file", "notes.md", null],
+    ])
+    expect(events.every((event) => event.kind !== "inject" || event.tokens > 0)).toBe(true)
+    // Unlisted attachments still count towards the estimate; skills have their own share.
+    const { estimate } = session.detail()
+    expect(estimate.skills).toBeGreaterThan(0)
+    expect(estimate.injected).toBeGreaterThan(estimate.skills)
+  })
+})
+
+describe("context estimate", () => {
+  it("sorts the window's content by kind and starts again after a compaction", () => {
+    const entries = [
+      human("please refactor the parser", 0),
+      assistant("m1", 1, [{ type: "thinking", thinking: "Let me look at the parser first." }]),
+      assistant("m1", 1, [{ type: "text", text: "Looking." }, toolUse("t1", "Read", { file_path: "/a.ts" })], { input_tokens: 100, output_tokens: 10 }),
+      { type: "user", timestamp: at(2), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "export const parser = 1" }] } },
+    ]
+    const before = fold(entries).detail().estimate
+    expect(before.user).toBeGreaterThan(0)
+    expect(before.reasoning).toBeGreaterThan(0)
+    expect(before.answers).toBeGreaterThan(0)
+    expect(before.toolCalls).toBeGreaterThan(0)
+    const after = fold([...entries, { type: "system", subtype: "compact_boundary", timestamp: at(3), compactMetadata: { trigger: "auto" } }]).detail().estimate
+    expect(after).toEqual({ user: 0, injected: 0, skills: 0, toolCalls: 0, reasoning: 0, answers: 0 })
+  })
+
+  it("estimates about four characters a token for Latin text and nearer one for CJK", () => {
+    expect(estimateTokens("")).toBe(0)
+    expect(estimateTokens("a".repeat(400))).toBe(100)
+    expect(estimateTokens("长".repeat(100))).toBe(70)
+  })
+})
+
+describe("request briefs", () => {
+  it("records what led into each request, the start of its reply and each turn's message", () => {
+    const detail = fold([
+      human("fix   the\nbug", 0),
+      assistant("m1", 1, [toolUse("t1", "Read", { file_path: "/a" })], { input_tokens: 10 }),
+      toolResult("t1", 2),
+      assistant("m2", 3, [], { input_tokens: 20 }),
+      assistant("m2", 3, [{ type: "text", text: "Fixed it." }]),
+      { type: "system", subtype: "compact_boundary", timestamp: at(4), compactMetadata: { trigger: "auto" } },
+      assistant("m3", 5, [{ type: "text", text: "Continuing." }], { input_tokens: 5 }),
+      { type: "user", timestamp: at(6), message: { role: "user", content: "<task-notification>done</task-notification>" } },
+      assistant("m4", 7, [], { input_tokens: 6 }),
+    ]).detail()
+    expect(detail.requests.map((request) => [request.cause, request.reply])).toEqual([
+      ["prompt", null],
+      ["tools", "Fixed it."],
+      ["compact", "Continuing."],
+      ["other", null],
+    ])
+    expect(detail.prompts).toEqual([{ turn: 1, text: "fix the bug" }])
+  })
+})
+
+describe("file search and images", () => {
+  it("counts files Grep and Glob turn up, resolving relative names against the session folder", () => {
+    const files = fold([
+      human("go", 0),
+      assistant("m1", 1, [toolUse("g1", "Grep", { pattern: "x" }), toolUse("r1", "Read", { file_path: "/work/demo/shot.PNG" })], { input_tokens: 1 }),
+      { ...toolResult("g1", 2), toolUseResult: { mode: "files_with_matches", filenames: ["src/a.ts", "/abs/b.ts"], numFiles: 2 } },
+      assistant("m2", 3, [toolUse("g2", "Glob", { pattern: "**/*.ts" })], { input_tokens: 1 }),
+      { ...toolResult("g2", 4), toolUseResult: { filenames: ["/work/demo/src/a.ts"], numFiles: 1 } },
+    ]).detail().files
+    expect(files.map((file) => [file.path, file.searches, file.reads, file.image])).toEqual([
+      ["/work/demo/src/a.ts", 2, 0, false],
+      ["/work/demo/shot.PNG", 0, 1, true],
+      ["/abs/b.ts", 1, 0, false],
+    ])
+  })
+})
+
+describe("subagents", () => {
+  it("credits each subagent's own usage and links it to whoever launched it", () => {
+    const session = new SessionFold("s")
+    for (const entry of [
+      human("go", 0),
+      assistant("m1", 1, [toolUse("call-a", "Agent", { prompt: "a" })], { input_tokens: 10 }),
+      { ...toolResult("call-a", 9), toolUseResult: { kind: "agent-result", agentId: "aA", state: "completed", content: "All   done" } },
+    ]) {
+      session.add(entry)
+    }
+    session.beginSubagent("aA", { agentType: "Explore", description: "Look around" })
+    session.add(assistant("s1", 2, [toolUse("call-b", "Task", { prompt: "b" })], { input_tokens: 400, output_tokens: 40, credits: 1 }, { isSidechain: true }), true)
+    session.beginSubagent("aB", { agentType: "Plan", toolUseId: "call-b" })
+    session.add(assistant("s2", 3, [toolUse("x", "Read", { file_path: "/a" })], { input_tokens: 50, output_tokens: 5 }, { isSidechain: true }), true)
+    session.resumeSubagent("aA")
+    session.add(assistant("s3", 4, [], { input_tokens: 600, output_tokens: 6 }, { isSidechain: true }), true)
+    const agents = session.detail().agents
+    expect(agents.map(({ id, parent, type, status, requests, tokens, credits, toolRuns, contextTokens, result }) => ({ id, parent, type, status, requests, tokens, credits, toolRuns, contextTokens, result }))).toEqual([
+      { id: "aA", parent: null, type: "Explore", status: "done", requests: 2, tokens: 1_046, credits: 1, toolRuns: 1, contextTokens: 600, result: "All done" },
+      { id: "aB", parent: "aA", type: "Plan", status: "unknown", requests: 1, tokens: 55, credits: 0, toolRuns: 1, contextTokens: 50, result: null },
+    ])
+    expect(session.summary().subagents).toBe(2)
+  })
+
+  it("maps launch outcomes to statuses", () => {
+    expect(["completed", "running", "cancelled", "failed", null].map((state) => agentStatus(state))).toEqual(["done", "running", "stopped", "failed", "unknown"])
   })
 })
 

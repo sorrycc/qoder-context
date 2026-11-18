@@ -88,6 +88,26 @@ describe("FoldCache", () => {
     expect(resumed.summary).toMatchObject({ requests: 3, turns: 2, contextTokens: 900, subagents: 1 })
   })
 
+  it("credits entries appended to an earlier subagent transcript to that subagent", async () => {
+    const folds = new FoldCache()
+    const dir = join(root, SESSION, "subagents")
+    await mkdir(dir, { recursive: true })
+    await writeFile(file, line(human("go", 0)))
+    await writeFile(join(dir, "agent-a.jsonl"), line(assistant("a1", 1, [], { input_tokens: 10 }, { isSidechain: true })))
+    await writeFile(join(dir, "agent-b.jsonl"), line(assistant("b1", 2, [], { input_tokens: 20 }, { isSidechain: true })))
+    await writeFile(join(dir, "agent-b.meta.json"), JSON.stringify({ agentType: "Plan", description: "Plan it" }))
+    await folds.use(await current(), (fold) => fold.summary())
+
+    await appendFile(join(dir, "agent-a.jsonl"), line(assistant("a2", 3, [], { input_tokens: 100 }, { isSidechain: true })))
+    // A folder's mtime only moves when entries are added or removed; bump the version as a new write would.
+    const resumed = await folds.use({ ...(await current()), version: "appended" }, (fold) => fold.detail())
+    expect(resumed.agents.map(({ id, type, requests, tokens }) => ({ id, type, requests, tokens }))).toEqual([
+      { id: "a", type: null, requests: 2, tokens: 110 },
+      { id: "b", type: "Plan", requests: 1, tokens: 20 },
+    ])
+    expect(resumed).toEqual((await foldTranscript(file, SESSION)).detail())
+  })
+
   it("starts over when a transcript is rewritten or a subagent transcript disappears", async () => {
     const folds = new FoldCache()
     await mkdir(join(root, SESSION, "subagents"), { recursive: true })

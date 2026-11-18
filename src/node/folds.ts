@@ -1,5 +1,5 @@
 import { SessionFold } from "./fold.js"
-import { readJsonl, START, subagentFiles, type ReadMark, type TranscriptFile } from "./transcripts.js"
+import { agentIdOf, beginSubagent, readJsonl, START, subagentFiles, type ReadMark, type TranscriptFile } from "./transcripts.js"
 
 const DEFAULT_LIMIT = 6
 
@@ -48,7 +48,7 @@ async function fresh(transcript: TranscriptFile): Promise<Tracked> {
   const main = await readJsonl(transcript.file, (entry) => fold.add(entry))
   if (main) marks.set(transcript.file, main)
   for (const child of await subagentFiles(transcript.file)) {
-    fold.beginSubagent()
+    await beginSubagent(fold, child)
     const mark = await readJsonl(child, (entry) => fold.add(entry, true))
     if (mark) marks.set(child, mark)
   }
@@ -68,7 +68,9 @@ async function resume(prior: Tracked, transcript: TranscriptFile): Promise<Track
   marks.set(transcript.file, main)
   for (const child of children) {
     const from = marks.get(child)
-    if (!from) fold.beginSubagent()
+    // Appended entries need to be credited to the agent they belong to, not the last one started.
+    if (!from) await beginSubagent(fold, child)
+    else fold.resumeSubagent(agentIdOf(child))
     const mark = await readJsonl(child, (entry) => fold.add(entry, true), from ?? START)
     if (!mark) return null
     marks.set(child, mark)

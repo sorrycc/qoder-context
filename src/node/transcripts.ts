@@ -1,7 +1,7 @@
-import { open, readdir, stat } from "node:fs/promises"
+import { open, readdir, readFile, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, join, resolve } from "node:path"
-import { SessionFold } from "./fold.js"
+import { SessionFold, type AgentMeta } from "./fold.js"
 
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9-]{7,63}$/
 const PROJECT_LIST_TTL_MS = 30_000
@@ -135,10 +135,36 @@ export async function foldTranscript(file: string, id: string, signal?: AbortSig
   const fold = new SessionFold(id)
   await readJsonl(file, (entry) => fold.add(entry), START, signal)
   for (const child of await subagentFiles(file)) {
-    fold.beginSubagent()
+    await beginSubagent(fold, child)
     await readJsonl(child, (entry) => fold.add(entry, true), START, signal)
   }
   return fold
+}
+
+/** Starts a subagent transcript in `fold`, named from its file (`agent-<id>.jsonl`) and described by its `.meta.json`. */
+export async function beginSubagent(fold: SessionFold, child: string): Promise<void> {
+  const agentId = agentIdOf(child)
+  const raw = await readFile(`${child.slice(0, -".jsonl".length)}.meta.json`, "utf8").catch(() => null)
+  let meta: AgentMeta = {}
+  try {
+    const parsed: unknown = raw ? JSON.parse(raw) : null
+    if (parsed && typeof parsed === "object") {
+      const { agentType, description, toolUseId } = parsed as Record<string, unknown>
+      meta = {
+        ...(typeof agentType === "string" && agentType ? { agentType } : {}),
+        ...(typeof description === "string" && description ? { description } : {}),
+        ...(typeof toolUseId === "string" && toolUseId ? { toolUseId } : {}),
+      }
+    }
+  } catch {
+    // A torn or foreign meta file only costs the agent's label.
+  }
+  fold.beginSubagent(agentId, meta)
+}
+
+export function agentIdOf(child: string): string {
+  const name = basename(child, ".jsonl")
+  return name.startsWith("agent-") ? name.slice("agent-".length) : name
 }
 
 /** Subagent transcripts beside `file`, in the order a fold reads them. */
@@ -221,7 +247,7 @@ function emitLine(line: Buffer, onEntry: (entry: unknown) => void): boolean {
   return true
 }
 
-function subagentDir(file: string): string {
+export function subagentDir(file: string): string {
   return join(file.slice(0, -".jsonl".length), "subagents")
 }
 

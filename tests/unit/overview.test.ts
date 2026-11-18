@@ -22,16 +22,20 @@ function summary(id: string, days: ({ day: string; tokens: number } & Partial<Da
     turns: 1,
     requests: 1,
     tokens: { prompt: 100, cacheRead: 60, cacheCreate: 0, output: 10 },
+    credits: 0,
+    originalCredits: 0,
+    metered: 0,
     contextTokens: 100,
     contextWindow: 1_000,
     compactions: 0,
     toolRuns: 0,
     toolErrors: 0,
     subagents: 0,
-    days: days.map((bucket) => ({ requests: 1, turns: 1, toolRuns: 2, activeMs: 1_000, shellRuns: 2, shellFailures: 1, ...bucket })),
+    days: days.map((bucket) => ({ requests: 1, credits: 0, metered: 0, turns: 1, toolRuns: 2, activeMs: 1_000, shellRuns: 2, shellFailures: 1, ...bucket })),
     tools: [{ name: "Bash", count: 2, lastAt: T0 }],
     skills: [],
     commands: [],
+    dayTallies: days.map((bucket) => ({ day: bucket.day, tools: [{ name: "Bash", count: 2, lastAt: T0 }], skills: [], commands: [] })),
     ...extra,
   }
 }
@@ -52,7 +56,30 @@ describe("aggregate", () => {
     expect(overview.week.at(-1)).toMatchObject({ day: today, tokens: 50 })
     expect(overview.heatmap.find((cell) => cell.day === old)).toMatchObject({ tokens: 16, requests: 2 })
     expect(overview.sessions.map((card) => card.id)).toEqual(["recent"])
+    // Tallies count by day: only today's runs are in the 7-day range; every heatmap day has its own.
     expect(overview.tools).toEqual([{ name: "Bash", count: 2, lastAt: T0 }])
+    expect(overview.dayTallies[old]?.tools).toEqual([{ name: "Bash", count: 4, lastAt: T0 }])
+    expect(overview.dayTallies[today]?.tools).toEqual([{ name: "Bash", count: 2, lastAt: T0 }])
+  })
+
+  it("sums credits and metered requests in range, per day, folder and card", () => {
+    const today = localDay(T0)
+    const old = localDay(T0 - 10 * DAY)
+    const overview = aggregate(
+      [
+        summary("a", [{ day: today, tokens: 50, credits: 1.25, metered: 1 }, { day: old, tokens: 5, credits: 9, metered: 1 }], { credits: 10.25, metered: 2 }),
+        summary("b", [{ day: today, tokens: 70, credits: 0.5, metered: 1, requests: 2 }], { credits: 0.5, metered: 1 }),
+      ],
+      "7d",
+      T0,
+    )
+    expect(overview.kpi).toMatchObject({ credits: 1.75, metered: 2, requests: 3 })
+    expect(overview.week.at(-1)).toMatchObject({ credits: 1.75, metered: 2 })
+    expect(overview.workspaces[0]).toMatchObject({ path: "/work", credits: 1.75 })
+    expect(overview.sessions.map((card) => [card.id, card.credits, card.metered])).toEqual([
+      ["a", 10.25, 2],
+      ["b", 0.5, 1],
+    ])
   })
 
   it("sums active time and shell outcomes in range and ranks folders by tokens", () => {
@@ -70,8 +97,8 @@ describe("aggregate", () => {
     )
     expect(overview.kpi).toMatchObject({ activeMs: 4_000, shellRuns: 8, shellFailures: 4 })
     expect(overview.workspaces).toEqual([
-      { path: "/work/two", sessions: 1, tokens: 70, activeMs: 1_000, lastAt: T0 },
-      { path: "/work/one", sessions: 2, tokens: 55, activeMs: 2_000, lastAt: T0 },
+      { path: "/work/two", sessions: 1, tokens: 70, credits: 0, activeMs: 1_000, lastAt: T0 },
+      { path: "/work/one", sessions: 2, tokens: 55, credits: 0, activeMs: 2_000, lastAt: T0 },
     ])
   })
 

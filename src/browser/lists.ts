@@ -1,7 +1,7 @@
 import { localDay } from "../shared/days.js"
 import type { SessionCard } from "../shared/types.js"
 
-export type Sort = "recent" | "tokens" | "context"
+export type Sort = "recent" | "tokens" | "credits" | "context"
 export type TallyKind = "tools" | "skills" | "commands"
 /** How the session list is sectioned: by the day each was last active, or by project folder. */
 export type Grouping = "date" | "workspace"
@@ -29,6 +29,7 @@ export function visibleSessions(sessions: readonly SessionCard[], filter: Filter
     return terms.every((term) => haystack.includes(term))
   })
   if (sort === "tokens") result.sort((a, b) => b.tokens - a.tokens)
+  else if (sort === "credits") result.sort((a, b) => b.credits - a.credits || b.tokens - a.tokens)
   else if (sort === "context") result.sort((a, b) => b.contextTokens - a.contextTokens)
   return result
 }

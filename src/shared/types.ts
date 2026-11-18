@@ -20,6 +20,9 @@ export interface DayBucket {
   readonly day: string
   readonly tokens: number
   readonly requests: number
+  /** Qoder credits the day's billable requests reported, and how many requests reported any. */
+  readonly credits: number
+  readonly metered: number
   readonly turns: number
   readonly toolRuns: number
   /** Model, tool and compaction time started that day (see TimingStats). */
@@ -27,6 +30,14 @@ export interface DayBucket {
   /** Shell runs that finished that day with a success or a failure, and how many failed. */
   readonly shellRuns: number
   readonly shellFailures: number
+}
+
+/** A day's tool, skill and command tallies, so the overview can count exactly by range or day. */
+export interface DayTallies {
+  readonly day: string
+  readonly tools: readonly Tally[]
+  readonly skills: readonly Tally[]
+  readonly commands: readonly Tally[]
 }
 
 /** Compact per-session facts; cached on disk and aggregated by the overview. */
@@ -41,6 +52,14 @@ export interface SessionSummary {
   readonly turns: number
   readonly requests: number
   readonly tokens: TokenTotals
+  /**
+   * Qoder credits from each request's own metering (`usage.credits`, after discounts) and before
+   * discounts; requests marked not billable are left out. `metered` counts the requests that
+   * reported credits at all: `auto` requests and older transcripts don't.
+   */
+  readonly credits: number
+  readonly originalCredits: number
+  readonly metered: number
   /** Prompt size of the latest main-agent request, i.e. what the window holds now. */
   readonly contextTokens: number
   readonly contextWindow: number | null
@@ -52,7 +71,11 @@ export interface SessionSummary {
   readonly tools: readonly Tally[]
   readonly skills: readonly Tally[]
   readonly commands: readonly Tally[]
+  readonly dayTallies: readonly DayTallies[]
 }
+
+/** What led into a request: the user's message, tool results, a compaction or something else (a reminder, a notification). */
+export type RequestCause = "prompt" | "tools" | "compact" | "other"
 
 export interface RequestPoint {
   readonly at: number
@@ -64,6 +87,11 @@ export interface RequestPoint {
   readonly tools: readonly string[]
   /** Time from the entry before this request (a prompt or tool result) to its reply; null when unknown. */
   readonly latencyMs: number | null
+  /** Credits the request reported, or null when it reported none. */
+  readonly credits: number | null
+  readonly cause: RequestCause
+  /** The start of the reply's text, if it wrote any. */
+  readonly reply: string | null
 }
 
 /** How a shell run ended. Background runs return at once and finish out of sight. */
@@ -111,6 +139,23 @@ export type ContextEvent =
       readonly requestIndex: number
     }
   | { readonly kind: "retry" | "error"; readonly at: number; readonly text: string; readonly requestIndex: number }
+  | {
+      readonly kind: "inject"
+      readonly at: number
+      readonly item: InjectItem
+      /** What was injected, by name: skills, files, a hook event, MCP servers or tools. */
+      readonly label: string
+      /** How many skills, files or tools it lists, when it lists any. */
+      readonly count: number | null
+      /** Rough token size of the injected text. */
+      readonly tokens: number
+      readonly requestIndex: number
+    }
+  | { readonly kind: "model"; readonly at: number; readonly from: string; readonly to: string; readonly requestIndex: number }
+  | { readonly kind: "mode"; readonly at: number; readonly mode: "plan" | "auto"; readonly active: boolean; readonly requestIndex: number }
+
+/** Context qodercli adds to the conversation on its own, by what it is. */
+export type InjectItem = "skillList" | "skill" | "memory" | "hook" | "mcpInstructions" | "mcpTools" | "file" | "restoredFiles" | "agentList"
 
 export interface FileActivity {
   readonly path: string
@@ -119,7 +164,67 @@ export interface FileActivity {
   /** Lines the writes added and removed, from the edit inputs (a whole-file write counts as added). */
   readonly added: number
   readonly removed: number
+  /** Times the file turned up in Grep or Glob results. */
+  readonly searches: number
+  readonly image: boolean
   readonly lastAt: number
+}
+
+/**
+ * Estimated make-up of what the window holds now, in tokens, from the transcript since the last
+ * compaction. The system prompt and tool schemas aren't written to disk; whatever the estimates
+ * leave of the prompt is theirs.
+ */
+export interface ContextEstimate {
+  readonly user: number
+  readonly injected: number
+  readonly skills: number
+  readonly toolCalls: number
+  readonly reasoning: number
+  readonly answers: number
+}
+
+/**
+ * Qoder's own context meter for the session, as the desktop app last saved it: shares of the model
+ * window (0–1). Only the latest snapshot is kept, and only for sessions the app measured.
+ */
+export interface HostUsage {
+  readonly at: number
+  readonly used: number
+  readonly systemPrompt: number
+  readonly tools: number
+  readonly skills: number
+  readonly messages: number
+}
+
+export interface ModelUsage {
+  readonly model: string
+  readonly requests: number
+  readonly tokens: number
+  readonly credits: number
+  readonly metered: number
+}
+
+export type AgentStatus = "running" | "done" | "failed" | "stopped" | "unknown"
+
+/** One subagent of the session, with who launched it: the main agent (null) or another subagent. */
+export interface FleetAgent {
+  readonly id: string
+  readonly parent: string | null
+  readonly type: string | null
+  readonly description: string | null
+  readonly model: string | null
+  readonly status: AgentStatus
+  readonly requests: number
+  readonly tokens: number
+  readonly credits: number
+  readonly toolRuns: number
+  /** Prompt size of its latest request. */
+  readonly contextTokens: number
+  readonly firstAt: number
+  readonly lastAt: number
+  /** The start of its final report. */
+  readonly result: string | null
 }
 
 export interface SessionDetail {
@@ -132,6 +237,12 @@ export interface SessionDetail {
   readonly commands: readonly CommandRun[]
   readonly commandsTruncated: number
   readonly timing: TimingStats
+  /** The opening message of each turn the shown requests belong to. */
+  readonly prompts: readonly { readonly turn: number; readonly text: string }[]
+  readonly estimate: ContextEstimate
+  readonly host: HostUsage | null
+  readonly models: readonly ModelUsage[]
+  readonly agents: readonly FleetAgent[]
 }
 
 /** `version` identifies the transcript state; pass it back to get `unchanged` until it moves. */
@@ -153,6 +264,8 @@ export interface SessionCard {
   readonly cacheRead: number
   readonly prompt: number
   readonly output: number
+  readonly credits: number
+  readonly metered: number
   readonly days: readonly string[]
   readonly tools: readonly string[]
   readonly skills: readonly string[]
@@ -164,6 +277,7 @@ export interface WorkspaceTally {
   readonly path: string
   readonly sessions: number
   readonly tokens: number
+  readonly credits: number
   readonly activeMs: number
   readonly lastAt: number
 }
@@ -182,6 +296,8 @@ export interface Overview {
     readonly activeMs: number
     readonly shellRuns: number
     readonly shellFailures: number
+    readonly credits: number
+    readonly metered: number
   }
   readonly week: readonly DayBucket[]
   readonly heatmap: readonly { readonly day: string; readonly tokens: number; readonly requests: number }[]
@@ -189,6 +305,8 @@ export interface Overview {
   readonly tools: readonly Tally[]
   readonly skills: readonly Tally[]
   readonly commands: readonly Tally[]
+  /** Tallies of each active heatmap day, for narrowing the cards to the picked day. */
+  readonly dayTallies: Readonly<Record<string, Omit<DayTallies, "day">>>
   /** Folders by billed tokens in range; sessions without a folder are left out. */
   readonly workspaces: readonly WorkspaceTally[]
   readonly sessions: readonly SessionCard[]

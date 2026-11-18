@@ -1,13 +1,17 @@
 import { Button } from "@qoder-space/design-system"
 import type { PluginViewContext } from "@qoder/plugin-api/view"
-import { memo, useCallback, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode, type RefObject } from "react"
-import { formatPercent, formatTokens, shortPath } from "../shared/format.js"
+import { memo, useCallback, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, type RefObject } from "react"
+import { formatCredits, formatPercent, formatTokens, shortPath } from "../shared/format.js"
 import {
   SERVICE_NAME,
+  type AgentStatus,
   type CommandRun,
   type CommandStatus,
   type ContextEvent,
   type FileActivity,
+  type FleetAgent,
+  type InjectItem,
+  type ModelUsage,
   type SessionDetail,
   type SessionResponse,
   type Tally,
@@ -19,26 +23,39 @@ import { clockTime, dateTime, formatDuration, relativeTime, type MessageKey, typ
 import { highlight, searchTerms, TALLY_CAP } from "./lists.js"
 import { enter, prefersReducedMotion } from "./motion.js"
 import {
+  composition,
   contextGauge,
+  creditsSub,
   displayCommand,
+  EVENT_GROUPS,
   eventCounts,
   eventRequest,
   fileFacts,
+  fleetFacts,
+  fleetTree,
   isSlow,
+  requestSeries,
   runFacts,
+  seriesIndex,
   SLOW_MS,
   splitPath,
   timeline,
   timingParts,
+  turnSeries,
   visibleFiles,
   visibleRuns,
+  type CompositionKey,
   type EventFilter,
+  type EventGroup,
   type FileFilter,
+  type FleetRow,
   type Gauge,
   type RunFilter,
   type RunSort,
   type TimelineItem,
   type TimingPart,
+  type TrendSeries,
+  type TrendUnit,
 } from "./session-model.js"
 import { TipBody, Tooltip, useChartTip, useHoverTip } from "./tooltip.js"
 import {
@@ -169,6 +186,14 @@ function Header({
         summary.cwd ? { icon: "folder", label: t("factFolder"), short: shortPath(summary.cwd), full: summary.cwd } : null,
         summary.model ? { icon: "chip", label: t("factModel"), short: summary.model, full: summary.model } : null,
         summary.gitBranch ? { icon: "branch", label: t("factBranch"), short: summary.gitBranch, full: summary.gitBranch } : null,
+        summary.lastAt > summary.firstAt
+          ? {
+              icon: "clock",
+              label: t("statSpan"),
+              short: formatDuration(summary.lastAt - summary.firstAt),
+              full: `${dateTime(t, summary.firstAt)} – ${dateTime(t, summary.lastAt)}`,
+            }
+          : null,
       ].filter(Boolean) as { icon: IconName; label: string; short: string; full: string }[])
     : []
   const active = tip.active === null ? undefined : facts[tip.active]
@@ -206,17 +231,21 @@ function Header({
 const Detail = memo(function Detail({ detail, t }: { readonly detail: SessionDetail; readonly t: Translate }) {
   const { summary } = detail
   const gauge = useMemo(() => contextGauge(detail), [detail])
+  const [unit, setUnit] = useState<TrendUnit>("request")
+  const series = useMemo(() => (unit === "turn" ? turnSeries(detail.requests) : requestSeries(detail.requests)), [unit, detail.requests])
   // The pinned request by its index in the whole session, so it stays put as old requests drop off
-  // the front of the trend. `reveal` counts requests from outside the chart to scroll to it.
+  // the front of the trend (and across request and turn columns). `reveal` counts requests from
+  // outside the chart to scroll to it.
   const [pin, setPin] = useState<{ readonly index: number; readonly reveal: number } | null>(null)
   const reveals = useRef(0)
   const trendRef = useRef<HTMLElement | null>(null)
   const offset = detail.requestsTruncated
   const count = detail.requests.length
-  const pinned = pin && pin.index >= offset && pin.index < offset + count ? pin.index - offset : null
+  const pinned = pin && pin.index >= offset && pin.index < offset + count ? seriesIndex(series, pin.index - offset) : null
   const onPin = useCallback(
-    (index: number | null) => setPin((current) => (index === null ? null : { index: index + offset, reveal: current?.reveal ?? 0 })),
-    [offset],
+    (column: number | null) =>
+      setPin((current) => (column === null ? null : { index: (series.last[column] ?? column) + offset, reveal: current?.reveal ?? 0 })),
+    [offset, series],
   )
   const showRequest = useCallback(
     (requestIndex: number) => {
@@ -244,13 +273,21 @@ const Detail = memo(function Detail({ detail, t }: { readonly detail: SessionDet
           <Kpi index={3} label={t("statTokens")} value={summary.tokens.prompt + summary.tokens.output} format={formatTokenValue} tone="accent" />
           <Kpi
             index={4}
+            label={t("kpiCredits")}
+            value={summary.metered > 0 ? summary.credits : null}
+            format={formatCreditValue}
+            tone="credits"
+            sub={creditsSub(summary.credits, summary.originalCredits, summary.metered, summary.requests, t)}
+          />
+          <Kpi
+            index={5}
             label={t("statCacheHit")}
             value={summary.tokens.prompt > 0 ? summary.tokens.cacheRead / summary.tokens.prompt : null}
             format={formatRatio}
             tone="success"
           />
           <Kpi
-            index={5}
+            index={6}
             label={t("statToolRuns")}
             value={summary.toolRuns}
             format={formatCount}
@@ -258,23 +295,35 @@ const Detail = memo(function Detail({ detail, t }: { readonly detail: SessionDet
             sub={summary.toolErrors > 0 ? t("statToolErrors", { count: summary.toolErrors }) : undefined}
           />
           <Kpi
-            index={6}
+            index={7}
             label={t("statCompactions")}
             value={summary.compactions}
             format={formatCount}
             tone={summary.compactions > 0 ? "warning" : "neutral"}
           />
-          <Kpi index={7} label={t("statSubagents")} value={summary.subagents} format={formatCount} />
-          <Kpi index={8} label={t("statSpan")} value={summary.lastAt - summary.firstAt} format={formatDuration} />
+          <Kpi index={8} label={t("statSubagents")} value={summary.subagents} format={formatCount} />
         </div>
       </div>
-      <TrendCard detail={detail} pinned={pinned} reveal={pin?.reveal ?? 0} onPin={onPin} sectionRef={trendRef} t={t} />
+      <TrendCard
+        detail={detail}
+        series={series}
+        unit={unit}
+        onUnit={setUnit}
+        pinned={pinned}
+        reveal={pin?.reveal ?? 0}
+        onPin={onPin}
+        sectionRef={trendRef}
+        t={t}
+      />
       <div className="qc-grid qc-pairs">
+        <MakeupCard detail={detail} t={t} />
         <Timing detail={detail} t={t} />
         <Events events={detail.events} reachable={(event) => eventRequest(event, offset, count) !== null} onShow={showEvent} t={t} />
         <Files files={detail.files} t={t} />
-        <TallyCard index={13} title={t("toolsTitle")} tallies={summary.tools} empty={{ icon: "tool", title: t("emptySessionTools") }} t={t} />
+        <TallyCard index={14} title={t("toolsTitle")} tallies={summary.tools} empty={{ icon: "tool", title: t("emptySessionTools") }} t={t} />
+        <ModelsCard models={detail.models} t={t} />
       </div>
+      {detail.agents.length > 0 ? <FleetCard agents={detail.agents} t={t} /> : null}
       <Commands detail={detail} onShowRequest={showRequest} t={t} />
     </>
   )
@@ -282,6 +331,7 @@ const Detail = memo(function Detail({ detail, t }: { readonly detail: SessionDet
 
 const formatTokenValue = (value: number | null) => formatTokens(value ?? 0)
 const formatRatio = (value: number | null) => formatPercent(value)
+const formatCreditValue = (value: number | null) => (value === null ? "—" : formatCredits(value))
 
 function ContextCard({ gauge, t }: { readonly gauge: Gauge; readonly t: Translate }) {
   const tone = contextTone(gauge.ratio)
@@ -356,14 +406,47 @@ function Stat({ label, tone, color, children }: { readonly label: string; readon
   )
 }
 
-const EVENT_ICONS: Record<ContextEvent["kind"], IconName> = { compaction: "scissors", retry: "refresh", error: "alert" }
-const EVENT_TONES: Record<ContextEvent["kind"], string> = { compaction: "warning", retry: "neutral", error: "danger" }
-const EVENT_KINDS = ["compaction", "retry", "error"] as const
+const EVENT_ICONS: Record<Exclude<ContextEvent["kind"], "inject">, IconName> = {
+  compaction: "scissors",
+  retry: "refresh",
+  error: "alert",
+  model: "chip",
+  mode: "gauge",
+}
+const INJECT_ICONS: Record<InjectItem, IconName> = {
+  skillList: "sparkle",
+  skill: "sparkle",
+  memory: "inbox",
+  hook: "tool",
+  mcpInstructions: "layers",
+  mcpTools: "layers",
+  file: "file",
+  restoredFiles: "file",
+  agentList: "branch",
+}
+const INJECT_TITLES: Record<InjectItem, MessageKey> = {
+  skillList: "injectSkillList",
+  skill: "injectSkill",
+  memory: "injectMemory",
+  hook: "injectHook",
+  mcpInstructions: "injectMcpInstructions",
+  mcpTools: "injectMcpTools",
+  file: "injectFile",
+  restoredFiles: "injectRestoredFiles",
+  agentList: "injectAgentList",
+}
+const EVENT_TONES: Record<ContextEvent["kind"], string> = { compaction: "warning", retry: "neutral", error: "danger", inject: "accent", model: "neutral", mode: "neutral" }
+const EVENT_GROUP_ORDER = ["compaction", "inject", "switch", "issue"] as const
 const EVENT_FILTER_LABELS: Record<EventFilter, MessageKey> = {
   all: "eventsAll",
   compaction: "eventsCompactions",
-  retry: "eventsRetries",
-  error: "eventsErrors",
+  inject: "eventsInjections",
+  switch: "eventsSwitches",
+  issue: "eventsIssues",
+}
+
+function eventIcon(event: ContextEvent): IconName {
+  return event.kind === "inject" ? INJECT_ICONS[event.item] : EVENT_ICONS[event.kind]
 }
 
 function Events({
@@ -380,10 +463,13 @@ function Events({
 }) {
   const [filter, setFilter] = useState<EventFilter>("all")
   const counts = useMemo(() => eventCounts(events), [events])
-  // Chips only for kinds the session has, and only when there is more than one to choose between.
-  const kinds = useMemo(() => EVENT_KINDS.filter((kind) => counts[kind] > 0), [counts])
-  const shownKind = kinds.includes(filter as ContextEvent["kind"]) ? filter : "all"
-  const items = useMemo(() => timeline(shownKind === "all" ? events : events.filter((event) => event.kind === shownKind)), [events, shownKind])
+  // Chips only for groups the session has, and only when there is more than one to choose between.
+  const kinds = useMemo(() => EVENT_GROUP_ORDER.filter((group) => counts[group] > 0), [counts])
+  const shownKind = kinds.includes(filter as EventGroup) ? filter : "all"
+  const items = useMemo(
+    () => timeline(shownKind === "all" ? events : events.filter((event) => EVENT_GROUPS[event.kind] === shownKind)),
+    [events, shownKind],
+  )
   const filterOptions = useMemo(
     () => (["all", ...kinds] as const).map((value) => ({ value, label: `${t(EVENT_FILTER_LABELS[value])} ${counts[value].toLocaleString()}` })),
     [kinds, counts, t],
@@ -413,20 +499,21 @@ function Events({
       onKeyDown={onKeyDown(item)}
     >
       <span className="qc-timeline-node">
-        <Icon name={EVENT_ICONS[item.event.kind]} size={12} />
+        <Icon name={eventIcon(item.event)} size={12} />
       </span>
       <span className="qc-timeline-body">
         <span className="qc-timeline-title">
           <span className="qc-name">{eventTitle(item.event, t)}</span>
           {item.count > 1 ? <span className="qc-badge">×{item.count}</span> : null}
+          {item.event.kind === "inject" ? <span className="qc-badge qc-size">≈{formatTokens(item.event.tokens)}</span> : null}
           <time className="qc-timeline-time">{relativeTime(t, item.event.at, now)}</time>
         </span>
-        <span className="qc-timeline-detail">{eventDetail(item.event)}</span>
+        {eventDetail(item.event) ? <span className="qc-timeline-detail">{eventDetail(item.event)}</span> : null}
       </span>
     </li>
   )
   return (
-    <Card index={11} title={t("eventsTitle")} hint={events.length > 0 ? events.length : undefined}>
+    <Card index={12} title={t("eventsTitle")} hint={events.length > 0 ? events.length : undefined}>
       {items.length === 0 ? (
         <EmptyState compact icon="sparkle" title={t("eventsEmpty")} hint={t("eventsEmptyHint")} />
       ) : (
@@ -453,14 +540,35 @@ function Events({
 }
 
 function eventTitle(event: ContextEvent, t: Translate): string {
-  if (event.kind === "compaction") return t("compaction", { trigger: t(TRIGGERS[event.trigger]) })
-  return t(event.kind === "retry" ? "retryEvent" : "errorEvent")
+  switch (event.kind) {
+    case "compaction":
+      return t("compaction", { trigger: t(TRIGGERS[event.trigger]) })
+    case "inject":
+      return t(INJECT_TITLES[event.item])
+    case "model":
+      return t("modelSwitch")
+    case "mode":
+      return t(event.active ? "modeOn" : "modeOff", { mode: t(event.mode === "plan" ? "modePlan" : "modeAuto") })
+    default:
+      return t(event.kind === "retry" ? "retryEvent" : "errorEvent")
+  }
 }
 
 function eventDetail(event: ContextEvent): string {
-  if (event.kind !== "compaction") return event.text
-  const tokens = (value: number | null) => (value === null ? "?" : formatTokens(value))
-  return `${tokens(event.preTokens)} → ${tokens(event.postTokens)}${event.durationMs !== null ? ` · ${formatDuration(event.durationMs)}` : ""}`
+  switch (event.kind) {
+    case "compaction": {
+      const tokens = (value: number | null) => (value === null ? "?" : formatTokens(value))
+      return `${tokens(event.preTokens)} → ${tokens(event.postTokens)}${event.durationMs !== null ? ` · ${formatDuration(event.durationMs)}` : ""}`
+    }
+    case "inject":
+      return event.count !== null && event.count > 1 ? `${event.count.toLocaleString()} · ${event.label}` : event.label
+    case "model":
+      return `${event.from} → ${event.to}`
+    case "mode":
+      return ""
+    default:
+      return event.text
+  }
 }
 
 function EventTip({ item, linked, t }: { readonly item: TimelineItem; readonly linked: boolean; readonly t: Translate }) {
@@ -477,67 +585,76 @@ function EventTip({ item, linked, t }: { readonly item: TimelineItem; readonly l
       rows.push({ label: t("compactFreed"), value: formatTokens(Math.max(0, event.preTokens - event.postTokens)) })
     }
     if (event.durationMs !== null) rows.push({ label: t("compactTook"), value: formatDuration(event.durationMs) })
-  } else if (item.count > 1) {
-    rows.push({ label: t("occurrences"), value: item.count.toLocaleString() }, { label: t("eventFirst"), value: when(item.firstAt) })
+  } else if (event.kind === "inject") {
+    rows.push({ label: t("eventSize"), value: `≈${formatTokens(event.tokens)}` })
+    if (event.count !== null) rows.push({ label: t("eventItems"), value: event.count.toLocaleString() })
   }
+  if (item.count > 1) rows.push({ label: t("occurrences"), value: item.count.toLocaleString() }, { label: t("eventFirst"), value: when(item.firstAt) })
   const hint = linked ? <div className="qc-tip-hint">{t("showInTrend")}</div> : null
+  const text = event.kind === "compaction" || event.kind === "mode" ? "" : eventDetail(event)
   return (
     <TipBody
       title={eventTitle(event, t)}
       rows={rows}
       note={
-        event.kind === "compaction" ? (
-          hint
-        ) : (
-          <>
-            {event.text}
-            {hint}
-          </>
-        )
+        <>
+          {text}
+          {hint}
+        </>
       }
     />
   )
 }
 
-const FILE_FILTER_LABELS: Record<FileFilter, MessageKey> = { all: "filesAll", edited: "filesEdited", read: "filesReadOnly" }
+const FILE_FILTER_LABELS: Record<FileFilter, MessageKey> = {
+  all: "filesAll",
+  edited: "filesEdited",
+  read: "filesReadOnly",
+  searched: "filesSearched",
+  images: "filesImages",
+}
+const FILE_KINDS = ["edited", "read", "searched", "images"] as const
 
 function Files({ files: all, t }: { readonly files: readonly FileActivity[]; readonly t: Translate }) {
   const [filter, setFilter] = useState<FileFilter>("all")
   const facts = useMemo(() => fileFacts(all), [all])
-  // Chips only when the files split both ways; without them the filter falls back to all.
-  const split = facts.counts.edited > 0 && facts.counts.read > 0
-  const shownFilter = split ? filter : "all"
+  // Chips for the kinds present, and only when they don't all pick the same files; otherwise all.
+  const kinds = useMemo(() => FILE_KINDS.filter((kind) => facts.counts[kind] > 0 && facts.counts[kind] < facts.counts.all), [facts])
+  const shownFilter = filter === "all" || kinds.includes(filter) ? filter : "all"
   const files = useMemo(() => visibleFiles(all, shownFilter), [all, shownFilter])
   const filterOptions = useMemo(
-    () => (Object.keys(FILE_FILTER_LABELS) as FileFilter[]).map((value) => ({ value, label: `${t(FILE_FILTER_LABELS[value])} ${facts.counts[value].toLocaleString()}` })),
-    [facts, t],
+    () => (["all", ...kinds] as const).map((value) => ({ value, label: `${t(FILE_FILTER_LABELS[value])} ${facts.counts[value].toLocaleString()}` })),
+    [kinds, facts, t],
   )
   const tip = useChartTip()
   const hover = useHoverTip(tip, 250)
-  const max = Math.max(1, ...files.map((file) => file.reads + file.writes))
+  const max = Math.max(1, ...files.map((file) => file.reads + file.writes + file.searches))
   const active = tip.active === null ? undefined : files[tip.active]
   const row = (file: FileActivity, position: number) => {
     const { name, dir } = splitPath(file.path)
     return (
       <li key={file.path} className="qc-row" tabIndex={0} data-qc-tip={position} aria-describedby={tip.id}>
         <span className="qc-name">
+          {file.image ? <span className="qc-badge qc-file-kind">{t("filesImages")}</span> : null}
           {name}
           {dir ? <span className="qc-row-dir"> {dir}</span> : null}
         </span>
         <span className="qc-count">
           {file.writes > 0 ? <LineDiff added={file.added} removed={file.removed} /> : null}
           {file.reads > 0 ? <span>{t("readsShort", { count: file.reads })}</span> : null}
+          {file.searches > 0 ? <span className="qc-muted">{t("searchesShort", { count: file.searches })}</span> : null}
         </span>
         <span className="qc-tally-bar qc-split-bar">
           <span style={{ width: `${(file.writes / max) * 100}%`, background: SERIES.output, ...enter(position) }} />
           <span style={{ width: `${(file.reads / max) * 100}%`, ...enter(position) }} />
+          <span className="qc-bar-search" style={{ width: `${(file.searches / max) * 100}%`, ...enter(position) }} />
         </span>
       </li>
     )
   }
   return (
     <Card
-      index={12}
+      index={13}
       title={t("filesTitle")}
       hint={facts.added + facts.removed > 0 ? <LineDiff added={facts.added} removed={facts.removed} /> : all.length > 0 ? all.length : undefined}
       aside={
@@ -551,6 +668,12 @@ function Files({ files: all, t }: { readonly files: readonly FileActivity[]; rea
               <i className="qc-swatch qc-swatch-read" />
               {t("filesRead")}
             </span>
+            {facts.counts.searched > 0 ? (
+              <span>
+                <i className="qc-swatch qc-swatch-search" />
+                {t("filesSearched")}
+              </span>
+            ) : null}
           </span>
         ) : undefined
       }
@@ -559,7 +682,7 @@ function Files({ files: all, t }: { readonly files: readonly FileActivity[]; rea
         <EmptyState compact icon="file" title={t("emptyFiles")} />
       ) : (
         <div className="qc-tip-host qc-tally-host" ref={tip.hostRef} {...hover}>
-          {split ? (
+          {kinds.length > 0 ? (
             <div className="qc-toolbar">
               <Segmented label={t("filesFilterLabel")} value={shownFilter} options={filterOptions} onChange={setFilter} />
             </div>
@@ -586,6 +709,7 @@ function Files({ files: all, t }: { readonly files: readonly FileActivity[]; rea
                       ]
                     : []),
                   { label: t("filesRead"), value: active.reads.toLocaleString(), color: "var(--qc-read)" },
+                  ...(active.searches > 0 ? [{ label: t("filesSearchHits"), value: active.searches.toLocaleString(), color: "var(--qc-search)" }] : []),
                   { label: t("tallyLastUsed"), value: relativeTime(t, active.lastAt) },
                 ]}
                 note={active.path}
@@ -662,6 +786,9 @@ function TallyCard({
 
 function TrendCard({
   detail,
+  series,
+  unit,
+  onUnit,
   pinned,
   reveal,
   onPin,
@@ -669,6 +796,9 @@ function TrendCard({
   t,
 }: {
   readonly detail: SessionDetail
+  readonly series: TrendSeries
+  readonly unit: TrendUnit
+  readonly onUnit: (unit: TrendUnit) => void
   readonly pinned: number | null
   readonly reveal: number
   readonly onPin: (index: number | null) => void
@@ -683,7 +813,15 @@ function TrendCard({
     ],
     [t],
   )
+  const unitOptions = useMemo(
+    () => [
+      { value: "request" as const, label: t("trendRequests") },
+      { value: "turn" as const, label: t("trendTurns") },
+    ],
+    [t],
+  )
   const { requests, requestsTruncated, summary } = detail
+  const prompts = useMemo(() => new Map(detail.prompts.map((prompt) => [prompt.turn, prompt.text])), [detail.prompts])
   return (
     <Card
       index={9}
@@ -693,12 +831,19 @@ function TrendCard({
       hint={
         requestsTruncated > 0
           ? t("trendTruncated", { shown: requests.length, total: requests.length + requestsTruncated })
-          : t(mode === "delta" ? "trendHintDelta" : "trendHint")
+          : t(mode === "delta" ? "trendHintDelta" : unit === "turn" ? "trendHintTurns" : "trendHint")
       }
-      aside={<Segmented label={t("trendModeLabel")} value={mode} options={options} onChange={setMode} />}
+      aside={
+        <>
+          <Segmented label={t("trendUnitLabel")} value={unit} options={unitOptions} onChange={onUnit} />
+          <Segmented label={t("trendModeLabel")} value={mode} options={options} onChange={setMode} />
+        </>
+      }
     >
       <RequestTrend
-        requests={requests}
+        series={series}
+        requestCount={requests.length}
+        prompts={prompts}
         events={detail.events}
         offset={requestsTruncated}
         window={summary.contextWindow}
@@ -727,6 +872,224 @@ function TrendCard({
   )
 }
 
+const PART_COLORS: Record<CompositionKey, string> = {
+  system: "var(--qc-comp-system)",
+  systemPrompt: "var(--qc-comp-system)",
+  tools: "var(--qc-comp-tools)",
+  skills: "var(--qc-comp-skills)",
+  user: "var(--qc-comp-user)",
+  injected: "var(--qc-comp-injected)",
+  toolCalls: "var(--qc-comp-tool-calls)",
+  reasoning: "var(--qc-comp-reasoning)",
+  answers: "var(--qc-comp-answers)",
+  messages: "var(--qc-comp-user)",
+}
+const PART_LABELS: Record<CompositionKey, MessageKey> = {
+  system: "partSystem",
+  systemPrompt: "partSystemPrompt",
+  tools: "partTools",
+  skills: "partSkills",
+  user: "partUser",
+  injected: "partInjected",
+  toolCalls: "partToolCalls",
+  reasoning: "partReasoning",
+  answers: "partAnswers",
+  messages: "partMessages",
+}
+
+/** What the window holds now, by kind: a bar of the prompt's make-up and one row per part. */
+function MakeupCard({ detail, t }: { readonly detail: SessionDetail; readonly t: Translate }) {
+  const makeup = useMemo(() => composition(detail), [detail])
+  const host = makeup.source === "host" ? detail.host : null
+  return (
+    <Card
+      index={10}
+      title={t("makeupTitle")}
+      aside={makeup.total > 0 ? <span className="qc-badge" data-tone={host ? "accent" : undefined}>{t(host ? "makeupHost" : "makeupEstimated")}</span> : undefined}
+    >
+      {makeup.parts.length === 0 ? (
+        <EmptyState compact icon="layers" title={t("makeupEmpty")} />
+      ) : (
+        <>
+          {/* Scaled to the prompt itself: the ring above already shows how full the window is. */}
+          <StackBar large scale={makeup.total} parts={makeup.parts.map((part) => ({ value: part.tokens, color: PART_COLORS[part.key] }))} label={t("makeupTitle")} />
+          <ul className="qc-timing-parts qc-makeup">
+            {makeup.parts.map((part, position) => (
+              <li key={part.key} className="qc-enter" style={enter(position)}>
+                <i className="qc-swatch" style={{ background: PART_COLORS[part.key] }} />
+                <span className="qc-timing-label">{t(PART_LABELS[part.key])}</span>
+                <span className="qc-timing-ms">≈{formatTokens(part.tokens)}</span>
+                <span className="qc-timing-share">{formatPercent(part.tokens / makeup.total, part.tokens / makeup.total < 0.1 ? 1 : 0)}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="qc-card-note">{host ? t("makeupNoteHost", { time: relativeTime(t, host.at) }) : t("makeupNoteEstimate")}</p>
+        </>
+      )}
+    </Card>
+  )
+}
+
+/** Requests, tokens and credits per model, main agent and subagents together. */
+function ModelsCard({ models, t }: { readonly models: readonly ModelUsage[]; readonly t: Translate }) {
+  const tip = useChartTip()
+  const hover = useHoverTip(tip, 250)
+  const byCredits = models.some((model) => model.credits > 0)
+  const measure = (model: ModelUsage) => (byCredits ? model.credits : model.tokens)
+  const max = Math.max(Number.EPSILON, ...models.map(measure))
+  const totalCredits = models.reduce((sum, model) => sum + model.credits, 0)
+  const active = tip.active === null ? undefined : models[tip.active]
+  const name = (model: ModelUsage) => (model.model === "?" ? t("modelUnknown") : model.model)
+  const row = (model: ModelUsage, position: number) => (
+    <li key={model.model} className="qc-row" tabIndex={0} data-qc-tip={position} aria-describedby={tip.id}>
+      <span className="qc-name">{name(model)}</span>
+      <span className="qc-count">
+        <span>{formatTokens(model.tokens)}</span>
+        {model.metered > 0 ? (
+          <span className="qc-credits-ink">{formatCredits(model.credits)}</span>
+        ) : (
+          <span className="qc-muted">{t("modelNotMetered")}</span>
+        )}
+      </span>
+      <span className="qc-tally-bar">
+        <span style={{ width: `${(measure(model) / max) * 100}%`, ...(byCredits ? { background: "var(--qc-credits)" } : {}), ...enter(position) }} />
+      </span>
+    </li>
+  )
+  return (
+    <Card index={15} title={t("modelsTitle")} hint={totalCredits > 0 ? t("creditsShort", { value: formatCredits(totalCredits) }) : undefined}>
+      {models.length === 0 ? (
+        <EmptyState compact icon="chip" title={t("modelsEmpty")} />
+      ) : (
+        <div className="qc-tip-host qc-tally-host" ref={tip.hostRef} {...hover}>
+          <CappedList className="qc-tally" items={models} cap={TALLY_CAP} render={row} showAll={t("showAll", { count: models.length })} showLess={t("showLess")} />
+          <Tooltip tip={tip}>
+            {active ? (
+              <TipBody
+                title={name(active)}
+                rows={[
+                  { label: t("statRequests"), value: active.requests.toLocaleString() },
+                  { label: t("statTokens"), value: formatTokens(active.tokens) },
+                  {
+                    label: t("kpiCredits"),
+                    value: active.metered > 0 ? formatCredits(active.credits) : t("modelNotMetered"),
+                    color: "var(--qc-credits)",
+                  },
+                  ...(active.metered > 0 && active.metered < active.requests
+                    ? [{ label: t("creditsMeteredLabel"), value: `${active.metered.toLocaleString()}/${active.requests.toLocaleString()}` }]
+                    : []),
+                  ...(totalCredits > 0 ? [{ label: t("tallyShare"), value: formatPercent(active.credits / totalCredits, 0) }] : []),
+                ]}
+              />
+            ) : null}
+          </Tooltip>
+        </div>
+      )}
+    </Card>
+  )
+}
+
+const AGENT_STATUS_LABELS: Record<AgentStatus, MessageKey> = {
+  running: "agentRunning",
+  done: "agentDone",
+  failed: "agentFailed",
+  stopped: "agentStopped",
+  unknown: "agentUnknown",
+}
+const AGENT_STATUS_ORDER = ["running", "done", "failed", "stopped", "unknown"] as const
+const FLEET_CAP = 8
+
+/** The session's subagents as a tree under whoever launched them, with what each used. */
+function FleetCard({ agents, t }: { readonly agents: readonly FleetAgent[]; readonly t: Translate }) {
+  const rows = useMemo(() => fleetTree(agents), [agents])
+  const facts = useMemo(() => fleetFacts(agents), [agents])
+  const byId = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents])
+  const tip = useChartTip()
+  const hover = useHoverTip(tip, 250)
+  const now = useNow(30_000)
+  const max = Math.max(1, ...agents.map((agent) => agent.tokens))
+  const active = tip.active === null ? undefined : rows[tip.active]
+  const label = (agent: FleetAgent) => agent.description ?? agent.type ?? agent.id
+  const row = ({ agent, depth }: FleetRow, position: number) => (
+    <li
+      key={agent.id}
+      className="qc-agent"
+      data-status={agent.status}
+      data-nested={depth > 0 || undefined}
+      style={{ "--qc-depth": Math.min(depth, 4) } as CSSProperties}
+      tabIndex={0}
+      data-qc-tip={position}
+      aria-describedby={tip.id}
+    >
+      <span className="qc-agent-status" aria-label={t(AGENT_STATUS_LABELS[agent.status])}>
+        <i />
+      </span>
+      <span className="qc-agent-main">
+        <span className="qc-agent-title">
+          {agent.type ? <span className="qc-badge">{agent.type}</span> : null}
+          <span className="qc-name">{label(agent)}</span>
+        </span>
+        <span className="qc-tally-bar">
+          <span style={{ width: `${(agent.tokens / max) * 100}%`, ...enter(position) }} />
+        </span>
+      </span>
+      <span className="qc-agent-meta">
+        <span>{formatTokens(agent.tokens)}</span>
+        {agent.credits > 0 ? <span className="qc-credits-ink">{formatCredits(agent.credits)}</span> : null}
+        <span className="qc-muted">{agent.status === "running" ? t(AGENT_STATUS_LABELS.running) : formatDuration(Math.max(0, agent.lastAt - agent.firstAt))}</span>
+      </span>
+    </li>
+  )
+  const hint = AGENT_STATUS_ORDER.filter((status) => facts.counts[status] > 0)
+    .map((status) => `${facts.counts[status].toLocaleString()} ${t(AGENT_STATUS_LABELS[status])}`)
+    .join(" · ")
+  return (
+    <Card
+      index={16}
+      className="qc-stack-gap"
+      title={t("fleetTitle")}
+      hint={hint}
+      aside={
+        <span className="qc-badge">
+          {formatTokens(facts.tokens)}
+          {facts.credits > 0 ? ` · ${t("creditsShort", { value: formatCredits(facts.credits) })}` : ""}
+        </span>
+      }
+    >
+      <div className="qc-tip-host qc-tally-host" ref={tip.hostRef} {...hover}>
+        <CappedList className="qc-fleet" items={rows} cap={FLEET_CAP} render={row} showAll={t("showAll", { count: rows.length })} showLess={t("showLess")} />
+        <Tooltip tip={tip}>
+          {active ? (
+            <TipBody
+              title={label(active.agent)}
+              rows={[
+                { label: t("runStatus"), value: t(AGENT_STATUS_LABELS[active.agent.status]) },
+                {
+                  label: t("fleetLaunchedBy"),
+                  value: active.agent.parent && byId.get(active.agent.parent) ? label(byId.get(active.agent.parent)!) : t("fleetMain"),
+                },
+                ...(active.agent.model ? [{ label: t("fleetModel"), value: active.agent.model }] : []),
+                { label: t("statRequests"), value: active.agent.requests.toLocaleString() },
+                { label: t("statTokens"), value: formatTokens(active.agent.tokens) },
+                ...(active.agent.credits > 0 ? [{ label: t("kpiCredits"), value: formatCredits(active.agent.credits), color: "var(--qc-credits)" }] : []),
+                { label: t("contextNow"), value: formatTokens(active.agent.contextTokens) },
+                { label: t("statToolRuns"), value: active.agent.toolRuns.toLocaleString() },
+                ...(active.agent.lastAt > 0
+                  ? [
+                      { label: t("fleetActive"), value: formatDuration(Math.max(0, active.agent.lastAt - active.agent.firstAt)) },
+                      { label: t("lastActive"), value: relativeTime(t, active.agent.lastAt, now) },
+                    ]
+                  : []),
+              ]}
+              note={active.agent.result}
+            />
+          ) : null}
+        </Tooltip>
+      </div>
+    </Card>
+  )
+}
+
 const TIMING_COLORS: Record<TimingPart["kind"], string> = { model: "var(--qc-time-model)", tool: "var(--qc-time-tool)", compact: "var(--qc-warning)" }
 const TIMING_LABELS: Record<TimingPart["kind"], MessageKey> = { model: "timingModel", tool: "timingTools", compact: "timingCompaction" }
 
@@ -750,7 +1113,7 @@ function Timing({ detail, t }: { readonly detail: SessionDetail; readonly t: Tra
   }
   return (
     <Card
-      index={10}
+      index={11}
       title={t("timingTitle")}
       hint={activeMs > 0 ? t("timingHint") : undefined}
       aside={
@@ -952,7 +1315,7 @@ function Commands({
 
   if (runs.length === 0) {
     return (
-      <Card index={14} title={t("runsTitle")}>
+      <Card index={17} title={t("runsTitle")}>
         <EmptyState compact icon="terminal" title={t("emptySessionCommands")} />
       </Card>
     )
@@ -960,7 +1323,7 @@ function Commands({
   const settledFailedRate = facts.settled > 0 ? facts.counts.failed / facts.settled : null
   return (
     <Card
-      index={14}
+      index={17}
       className="qc-runs-card"
       title={t("runsTitle")}
       hint={detail.commandsTruncated > 0 ? t("runsTruncated", { shown: runs.length, total: runs.length + detail.commandsTruncated }) : runs.length}

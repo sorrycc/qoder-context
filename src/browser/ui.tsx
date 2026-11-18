@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type Ref } from "react"
 import { EASE_OUT, enter, prefersReducedMotion, SLIDE_MS, useTweenedNumber } from "./motion.js"
 
-export type Tone = "neutral" | "accent" | "success" | "warning" | "danger"
+export type Tone = "neutral" | "accent" | "success" | "warning" | "danger" | "credits"
 
 /** Renders `value` through `format`, easing between updates; null skips the tween. */
 export function AnimatedNumber({ value, format }: { readonly value: number | null; readonly format: (value: number | null) => string }) {

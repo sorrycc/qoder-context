@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { formatTokens } from "../shared/format.js"
 import { SERVICE_NAME, type Range, type SessionSummary } from "../shared/types.js"
 import { FoldCache } from "./folds.js"
+import { HostUsageReader } from "./host-usage.js"
 import { OverviewIndex } from "./overview.js"
 import { SessionDetails } from "./session.js"
 import { describe, isSessionId, resolveProjectsRoot, TranscriptLocator } from "./transcripts.js"
@@ -20,7 +21,9 @@ export const activate: Activate = (context) => {
     })
   const folds = new FoldCache()
   const index = new OverviewIndex(locator, join(context.storagePath, "overview-cache.json"), report, folds)
-  const details = new SessionDetails(locator, folds)
+  // The plugin's storage sits at <app data>/app-plugin-data/<plugin id>, beside the app's own database.
+  const host = new HostUsageReader(join(context.storagePath, "..", "..", "main.sqlite"), report)
+  const details = new SessionDetails(locator, folds, host)
 
   const summaryFor = async (sessionId: string): Promise<SessionSummary | null> => {
     const file = await locator.find(sessionId)

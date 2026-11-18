@@ -1,10 +1,10 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react"
 import { localDay } from "../shared/days.js"
-import { formatPercent, formatTokens } from "../shared/format.js"
+import { formatCredits, formatPercent, formatTokens } from "../shared/format.js"
 import type { ContextEvent, DayBucket, RequestPoint } from "../shared/types.js"
 import { clockTime, formatDuration, type Translate } from "./i18n.js"
 import { enter, prefersReducedMotion, useTweenedNumber } from "./motion.js"
-import { promptDeltas } from "./session-model.js"
+import { promptDeltas, seriesIndex, type TrendSeries } from "./session-model.js"
 import { TipBody, Tooltip, useChartTip } from "./tooltip.js"
 import { Collapse, Icon } from "./ui.js"
 
@@ -65,8 +65,13 @@ export const WeekBars = /* @__PURE__ */ memo(function WeekBars({ days, locale, t
   const height = 112
   const top = 16
   const max = Math.max(1, ...days.map((day) => day.tokens))
+  // Credits sit beside tokens on their own scale, when any day has them.
+  const maxCredits = Math.max(0, ...days.map((day) => day.credits))
+  const paired = maxCredits > 0
   const slot = width / Math.max(1, days.length)
-  const barWidth = Math.min(slot * 0.56, WEEK_BAR_MAX)
+  const barWidth = paired ? Math.min(slot * 0.3, WEEK_BAR_MAX / 2) : Math.min(slot * 0.56, WEEK_BAR_MAX)
+  const pairGap = paired ? 2 : 0
+  const band = paired ? barWidth * 2 + pairGap : barWidth
   const today = localDay(Date.now())
   const active = tip.active === null ? undefined : days[tip.active]
   return (
@@ -87,24 +92,39 @@ export const WeekBars = /* @__PURE__ */ memo(function WeekBars({ days, locale, t
         ) : null}
         {days.map((day, index) => {
           const barHeight = (day.tokens / max) * height
+          const creditHeight = paired ? (day.credits / maxCredits) * height : 0
           const isActive = tip.active === index
           const cx = index * slot + slot / 2
+          const left = cx - band / 2
           return (
             <g key={day.day} data-active={isActive || undefined} onPointerEnter={() => tip.show(index)}>
-              <rect className="qc-band" x={cx - Math.min(slot - 4, barWidth + 16) / 2} y={-top} width={Math.min(slot - 4, barWidth + 16)} height={height + top} rx={6} />
+              <rect className="qc-band" x={cx - Math.min(slot - 4, band + 16) / 2} y={-top} width={Math.min(slot - 4, band + 16)} height={height + top} rx={6} />
               <rect
                 className="qc-bar qc-grow-y"
                 style={enter(index)}
                 data-qc-tip={index}
-                x={cx - barWidth / 2}
+                x={left}
                 y={height - barHeight}
                 width={barWidth}
                 height={Math.max(barHeight, day.tokens > 0 ? 2 : 0)}
                 rx={3}
                 fill="var(--qc-accent)"
               />
+              {paired ? (
+                <rect
+                  className="qc-bar qc-grow-y"
+                  style={enter(index + 1)}
+                  data-qc-tip={index}
+                  x={left + barWidth + pairGap}
+                  y={height - creditHeight}
+                  width={barWidth}
+                  height={Math.max(creditHeight, day.credits > 0 ? 2 : 0)}
+                  rx={3}
+                  fill="var(--qc-credits)"
+                />
+              ) : null}
               {day.tokens > 0 ? (
-                <text className="qc-fade qc-value" style={enter(index + 4)} x={cx} y={height - barHeight - 5} textAnchor="middle">
+                <text className="qc-fade qc-value" style={enter(index + 4)} x={cx} y={height - Math.max(barHeight, creditHeight) - 5} textAnchor="middle">
                   {formatTokens(day.tokens)}
                 </text>
               ) : null}
@@ -115,12 +135,25 @@ export const WeekBars = /* @__PURE__ */ memo(function WeekBars({ days, locale, t
           )
         })}
       </svg>
+      {paired ? (
+        <div className="qc-legend qc-legend-inline qc-week-legend" aria-hidden="true">
+          <span>
+            <i className="qc-swatch" style={{ background: "var(--qc-accent)" }} />
+            {t("kpiTokens")}
+          </span>
+          <span>
+            <i className="qc-swatch" style={{ background: "var(--qc-credits)" }} />
+            {t("kpiCredits")}
+          </span>
+        </div>
+      ) : null}
       <Tooltip tip={tip}>
         {active ? (
           <TipBody
             title={longDate(active.day, locale)}
             rows={[
               { label: t("kpiTokens"), value: formatTokens(active.tokens), color: "var(--qc-accent)" },
+              ...(paired ? [{ label: t("kpiCredits"), value: formatCredits(active.credits), color: "var(--qc-credits)" }] : []),
               { label: t("kpiRequests"), value: active.requests.toLocaleString() },
               { label: t("kpiTurns"), value: active.turns.toLocaleString() },
               { label: t("kpiToolRuns"), value: active.toolRuns.toLocaleString() },
@@ -573,7 +606,8 @@ const DELTA = { growth: SERIES.uncached, shrink: "var(--qc-success)" } as const
  * `reveal` (bumped by the caller) scrolls the pinned request into view.
  */
 export function RequestTrend({
-  requests,
+  series,
+  requestCount,
   events,
   offset,
   window,
@@ -581,22 +615,48 @@ export function RequestTrend({
   pinned,
   reveal,
   onPin,
+  prompts,
   children,
   t,
 }: {
-  readonly requests: readonly RequestPoint[]
+  /** The columns: one per request or one per turn. */
+  readonly series: TrendSeries
+  /** Requests the series is built from, for placing compaction markers. */
+  readonly requestCount: number
   readonly events: readonly ContextEvent[]
   readonly offset: number
   readonly window: number | null
   readonly mode: TrendMode
-  /** Index into `requests` of the pinned request. */
+  /** Index into the series of the pinned column. */
   readonly pinned: number | null
   readonly reveal: number
   readonly onPin: (index: number | null) => void
+  /** Each turn's opening message, for the pinned column's brief. */
+  readonly prompts: ReadonlyMap<number, string>
   /** Rendered between the chart and the pinned request, e.g. the legend. */
   readonly children?: ReactNode
   readonly t: Translate
 }) {
+  const requests = series.points
+  const turns = series.unit === "turn"
+  const number = (index: number) => (turns ? (requests[index]?.turn ?? index + 1) : offset + index + 1)
+  const title = (index: number) => {
+    const point = requests[index]
+    if (!point) return null
+    if (!turns) {
+      return (
+        <>
+          {t("request", { index: offset + index + 1 })} <span className="qc-muted">· {t("turn", { turn: point.turn })}</span>
+        </>
+      )
+    }
+    const count = series.last[index]! - series.first[index]! + 1
+    return (
+      <>
+        {t("turnTitle", { turn: point.turn })} <span className="qc-muted">· {t("timingModelSub", { count })}</span>
+      </>
+    )
+  }
   const tip = useChartTip()
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const { height, top, bottom, pad } = TREND
@@ -616,30 +676,35 @@ export function RequestTrend({
     for (const event of events) {
       if (event.kind !== "compaction") continue
       const index = event.requestIndex - offset
-      if (index >= 0 && index <= requests.length) byIndex.set(index, event)
+      if (index < 0 || index > requestCount) continue
+      // A compaction before the request that follows it; after the last one, past the last column.
+      const column = index === requestCount ? requests.length : seriesIndex(series, index)
+      if (column !== null) byIndex.set(column, event)
     }
     return byIndex
-  }, [events, offset, requests.length])
+  }, [events, offset, requestCount, series, requests.length])
   const every = labelEvery(pitch, 28)
 
-  // The plot grows in as one group on mount (one animation instead of hundreds); requests that
+  // The plot grows in as one group on mount (one animation instead of hundreds); columns that
   // arrive later grow in on their own.
-  const mountedEnd = useRef(offset + requests.length)
+  const mountedEnd = useRef({ unit: series.unit, end: number(requests.length - 1) })
+  if (mountedEnd.current.unit !== series.unit) mountedEnd.current = { unit: series.unit, end: number(requests.length - 1) }
   const bars = useMemo(
     () =>
       requests.map((request, index) => (
-        <g key={offset + index} className={offset + index >= mountedEnd.current ? "qc-grow-y" : undefined} data-qc-tip={index}>
+        <g key={number(index)} className={number(index) > mountedEnd.current.end ? "qc-grow-y" : undefined} data-qc-tip={index}>
           {mode === "delta" ? deltaRect(deltas[index] ?? null, index * pitch, bar, geometry) : stackRects(request, index * pitch, bar, geometry.y)}
         </g>
       )),
-    [requests, deltas, mode, pitch, bar, geometry, offset],
+    // `number` only changes with the series and the offset.
+    [requests, deltas, mode, pitch, bar, geometry, offset, series],
   )
 
   // Open on the latest requests; they're what the current context is made of.
   useEffect(() => {
     const scroller = scrollRef.current
     if (scroller) scroller.scrollLeft = scroller.scrollWidth
-  }, [requests.length])
+  }, [requests.length, series.unit])
 
   // Keep the keyboard-selected column in view, then re-anchor the tooltip to it.
   useEffect(() => {
@@ -700,7 +765,7 @@ export function RequestTrend({
             height={plotHeight}
             viewBox={`${-pad} ${-top} ${width + pad * 2} ${plotHeight}`}
             role="img"
-            aria-label={t("trendTitle")}
+            aria-label={`${t("trendTitle")} · ${t(turns ? "trendTurns" : "trendRequests")}`}
             data-mode={mode}
             onPointerMove={move}
             onPointerLeave={tip.hide}
@@ -758,9 +823,9 @@ export function RequestTrend({
               )
             })}
             {requests.map((_, index) =>
-              index === pinned || ((offset + index + 1) % every === 0 && (pinned === null || Math.abs(index - pinned) * pitch >= 24)) ? (
+              index === pinned || (number(index) % every === 0 && (pinned === null || Math.abs(index - pinned) * pitch >= 24)) ? (
                 <text key={index} className={highlight === index ? "qc-today" : undefined} x={index * pitch + bar / 2} y={height + 13} textAnchor="middle">
-                  {offset + index + 1}
+                  {number(index)}
                 </text>
               ) : null,
             )}
@@ -769,11 +834,7 @@ export function RequestTrend({
         <Tooltip tip={tip}>
           {active && tip.active !== null ? (
             <TipBody
-              title={
-                <>
-                  {t("request", { index: offset + tip.active + 1 })} <span className="qc-muted">· {t("turn", { turn: active.turn })}</span>
-                </>
-              }
+              title={title(tip.active)}
               rows={requestRows(active, deltas[tip.active] ?? null, window, mode, t)}
               note={
                 <>
@@ -789,7 +850,9 @@ export function RequestTrend({
       {children}
       <PinnedRequest
         request={pinned === null ? null : (requests[pinned] ?? null)}
-        index={pinned === null ? null : offset + pinned}
+        title={pinned === null ? null : title(pinned)}
+        before={pinned === null || pinned === 0 ? null : (requests[pinned - 1] ?? null)}
+        prompt={pinned === null ? null : (prompts.get(requests[pinned]?.turn ?? -1) ?? null)}
         delta={pinned === null ? null : (deltas[pinned] ?? null)}
         compaction={pinned === null ? undefined : compactions.get(pinned)}
         window={window}
@@ -816,6 +879,7 @@ function requestRows(request: RequestPoint, delta: number | null, window: number
   )
   if (mode === "total" && delta !== null) rows.push({ label: t("deltaChange"), value: signedTokens(delta) })
   if (request.latencyMs !== null) rows.push({ label: t("latency"), value: formatElapsed(request.latencyMs) })
+  if (request.credits !== null) rows.push({ label: t("kpiCredits"), value: formatCredits(request.credits), color: "var(--qc-credits)" })
   return rows
 }
 
@@ -843,26 +907,34 @@ export function formatElapsed(ms: number): string {
   return formatDuration(ms)
 }
 
+interface PinnedFacts {
+  readonly request: RequestPoint
+  readonly title: ReactNode
+  readonly before: RequestPoint | null
+  readonly prompt: string | null
+  readonly delta: number | null
+  readonly compaction: Compaction | undefined
+}
+
 /** The pinned request's facts under the chart; it slides open and keeps its last content as it closes. */
 function PinnedRequest({
   request,
-  index,
+  title,
+  before,
+  prompt,
   delta,
   compaction,
   window,
   onClose,
   t,
-}: {
+}: Omit<PinnedFacts, "request"> & {
   readonly request: RequestPoint | null
-  readonly index: number | null
-  readonly delta: number | null
-  readonly compaction: Compaction | undefined
   readonly window: number | null
   readonly onClose: () => void
   readonly t: Translate
 }) {
-  const last = useRef<{ request: RequestPoint; index: number; delta: number | null; compaction: Compaction | undefined } | null>(null)
-  if (request && index !== null) last.current = { request, index, delta, compaction }
+  const last = useRef<PinnedFacts | null>(null)
+  if (request) last.current = { request, title, before, prompt, delta, compaction }
   const shown = last.current
   const open = request !== null
   return (
@@ -871,10 +943,8 @@ function PinnedRequest({
         <div className="qc-pin-strip" role="status" aria-label={t("pinnedLabel")}>
           <div className="qc-pin-head">
             <Icon name="pin" size={12} />
-            <strong>{t("request", { index: shown.index + 1 })}</strong>
-            <span className="qc-muted">
-              {t("turn", { turn: shown.request.turn })} · {clockTime(t, shown.request.at)}
-            </span>
+            <strong className="qc-name">{shown.title}</strong>
+            <span className="qc-muted">{clockTime(t, shown.request.at)}</span>
             <button type="button" className="qc-icon-button qc-pin-close" aria-label={t("unpin")} onClick={onClose}>
               <Icon name="close" size={12} />
             </button>
@@ -912,17 +982,55 @@ function PinnedRequest({
                 <dd>{formatElapsed(shown.request.latencyMs)}</dd>
               </div>
             ) : null}
-            {shown.request.tools.length > 0 ? (
-              <div className="qc-pin-tools">
-                <dt>{t("toolsTitle")}</dt>
-                <dd>{toolList(shown.request.tools)}</dd>
+            {shown.request.credits !== null ? (
+              <div>
+                <dt>
+                  <i className="qc-swatch" style={{ background: "var(--qc-credits)" }} />
+                  {t("kpiCredits")}
+                </dt>
+                <dd>{formatCredits(shown.request.credits)}</dd>
               </div>
             ) : null}
           </dl>
+          <Brief facts={shown} t={t} />
           {shown.compaction ? <CompactionNote event={shown.compaction} t={t} /> : null}
         </div>
       ) : null}
     </Collapse>
+  )
+}
+
+/** Three plain lines for a pinned request: the turn's message, what came in, and what it did. */
+function Brief({ facts, t }: { readonly facts: PinnedFacts; readonly t: Translate }) {
+  const { request, before, prompt } = facts
+  const input =
+    request.cause === "prompt"
+      ? t("causePrompt")
+      : request.cause === "compact"
+        ? t("causeCompact")
+        : request.cause === "tools" && before && before.tools.length > 0
+          ? t("causeTools", { tools: toolList(before.tools) })
+          : t("causeOther")
+  const response = [request.reply ? `“${request.reply}”` : null, request.tools.length > 0 ? t("replyTools", { tools: toolList(request.tools) }) : null]
+    .filter(Boolean)
+    .join(" · ")
+  return (
+    <dl className="qc-brief">
+      {prompt ? (
+        <div>
+          <dt>{t("briefUser")}</dt>
+          <dd className="qc-brief-quote">{prompt}</dd>
+        </div>
+      ) : null}
+      <div>
+        <dt>{t("briefIn")}</dt>
+        <dd>{input}</dd>
+      </div>
+      <div>
+        <dt>{t("briefOut")}</dt>
+        <dd>{response || t("replyNone")}</dd>
+      </div>
+    </dl>
   )
 }
 

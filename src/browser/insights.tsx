@@ -1,7 +1,7 @@
 import { Button } from "@qoder-space/design-system"
 import type { PluginViewContext } from "@qoder/plugin-api/view"
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { formatPercent, formatTokens, shortPath } from "../shared/format.js"
+import { formatCredits, formatPercent, formatTokens, shortPath } from "../shared/format.js"
 import { SERVICE_NAME, type Overview, type OverviewResponse, type Range, type SessionCard, type Tally, type WorkspaceTally } from "../shared/types.js"
 import { Donut, Heatmap, longDate, MiniRing, MiniStack, SERIES, WeekBars } from "./charts.js"
 import { registerView, useLoad } from "./host.js"
@@ -21,6 +21,7 @@ import {
   type TallyKind,
 } from "./lists.js"
 import { enter } from "./motion.js"
+import { creditsSub } from "./session-model.js"
 import { TipBody, Tooltip, useChartTip, useHoverTip } from "./tooltip.js"
 import {
   CappedList,
@@ -35,11 +36,12 @@ import {
   Skeleton,
   Spinner,
   useDebounced,
+  useNow,
   type IconName,
 } from "./ui.js"
 
 const RANGE_LABELS: Record<Range, MessageKey> = { today: "rangeToday", "7d": "range7d", "30d": "range30d" }
-const SORT_LABELS: Record<Sort, MessageKey> = { recent: "sortRecent", tokens: "sortTokens", context: "sortContext" }
+const SORT_LABELS: Record<Sort, MessageKey> = { recent: "sortRecent", tokens: "sortTokens", credits: "sortCredits", context: "sortContext" }
 const GROUP_LABELS: Record<Grouping, MessageKey> = { date: "groupDate", workspace: "groupWorkspace" }
 
 registerView((context, t) => <Insights context={context} t={t} />)
@@ -176,17 +178,30 @@ const Dashboard = memo(function Dashboard({ context, data, t }: { readonly conte
     ],
     [data.composition, t],
   )
-  const tallyProps = { usage, onToggle: toggleTally, t }
+  const tallyProps = { usage, onToggle: toggleTally, scope: day ? t("tallyDay", { day: longDate(day, context.locale) }) : undefined, t }
   const selectedOf = (kind: TallyKind) => (tally?.kind === kind ? tally.name : null)
+  // A picked day narrows the tallies to what ran that day.
+  const tallies = day ? (data.dayTallies[day] ?? EMPTY_TALLIES) : data
 
   return (
     <>
       <div className="qc-grid qc-kpis qc-kpis-8">
         <Kpi index={0} label={t("kpiSessions")} value={data.kpi.sessions} format={formatCount} />
         <Kpi index={1} label={t("kpiTokens")} value={data.kpi.tokens} format={formatTokenValue} tone="accent" />
-        <Kpi index={2} label={t("kpiCacheHit")} value={data.kpi.cacheHitRate} format={formatRatio} tone="success" />
-        <Kpi index={3} label={t("kpiTurns")} value={data.kpi.turns} format={formatCount} />
-        <Kpi index={4} label={t("kpiRequests")} value={data.kpi.requests} format={formatCount} />
+        <Kpi
+          index={2}
+          label={t("kpiCredits")}
+          value={kpi.metered > 0 ? kpi.credits : null}
+          format={formatCreditValue}
+          tone="credits"
+          sub={
+            kpi.metered > 0 && kpi.metered >= kpi.requests && kpi.sessions > 0
+              ? t("kpiCreditsSub", { per: formatCredits(kpi.credits / kpi.sessions) })
+              : creditsSub(kpi.credits, kpi.credits, kpi.metered, kpi.requests, t)
+          }
+        />
+        <Kpi index={3} label={t("kpiCacheHit")} value={data.kpi.cacheHitRate} format={formatRatio} tone="success" />
+        <Kpi index={4} label={t("kpiTurns")} value={data.kpi.turns} format={formatCount} sub={kpi.requests > 0 ? t("timingModelSub", { count: kpi.requests }) : undefined} />
         <Kpi index={5} label={t("kpiToolRuns")} value={data.kpi.toolRuns} format={formatCount} />
         <Kpi
           index={6}
@@ -223,7 +238,7 @@ const Dashboard = memo(function Dashboard({ context, data, t }: { readonly conte
           index={12}
           title={t("toolsTitle")}
           kind="tools"
-          tallies={data.tools}
+          tallies={tallies.tools}
           selected={selectedOf("tools")}
           emptyIcon="tool"
           emptyTitle={t("emptyTools")}
@@ -233,7 +248,7 @@ const Dashboard = memo(function Dashboard({ context, data, t }: { readonly conte
           index={13}
           title={t("skillsTitle")}
           kind="skills"
-          tallies={data.skills}
+          tallies={tallies.skills}
           selected={selectedOf("skills")}
           emptyIcon="sparkle"
           emptyTitle={t("emptySkills")}
@@ -244,14 +259,14 @@ const Dashboard = memo(function Dashboard({ context, data, t }: { readonly conte
           index={14}
           title={t("commandsTitle")}
           kind="commands"
-          tallies={data.commands}
+          tallies={tallies.commands}
           selected={selectedOf("commands")}
           emptyIcon="terminal"
           emptyTitle={t("emptyCommands")}
           {...tallyProps}
         />
       </div>
-      <p className="qc-note">{t("estimateNote")}</p>
+      {kpi.metered > 0 ? <p className="qc-note">{t("creditsNote")}</p> : null}
       <Card
         index={15}
         className="qc-sessions-card"
@@ -302,6 +317,8 @@ const Dashboard = memo(function Dashboard({ context, data, t }: { readonly conte
 
 const formatTokenValue = (value: number | null) => formatTokens(value ?? 0)
 const formatRatio = (value: number | null) => formatPercent(value)
+const formatCreditValue = (value: number | null) => (value === null ? "—" : formatCredits(value))
+const EMPTY_TALLIES = { tools: [], skills: [], commands: [] } as const
 
 /** How many listed sessions used each tool, skill and command, keyed `kind:name`. */
 function sessionsPerTally(sessions: readonly SessionCard[]): ReadonlyMap<string, number> {
@@ -363,6 +380,7 @@ const TallyCard = memo(function TallyCard({
   emptyHint,
   usage,
   onToggle,
+  scope,
   t,
 }: {
   readonly index: number
@@ -376,10 +394,13 @@ const TallyCard = memo(function TallyCard({
   readonly emptyHint?: string
   readonly usage: ReadonlyMap<string, number>
   readonly onToggle: (kind: TallyKind, name: string) => void
+  /** The day the counts are narrowed to, when one is picked. */
+  readonly scope?: string
   readonly t: Translate
 }) {
   const tip = useChartTip()
   const hover = useHoverTip(tip, 120)
+  const now = useNow(60_000)
   const max = Math.max(1, ...tallies.map((tally) => tally.count))
   const selected = selectedName === null ? -1 : tallies.findIndex((tally) => tally.name === selectedName)
   const active = tip.active === null ? undefined : tallies[tip.active]
@@ -389,7 +410,9 @@ const TallyCard = memo(function TallyCard({
       <li key={tally.name}>
         <button type="button" data-qc-tip={position} aria-pressed={pressed} aria-describedby={tip.id} onClick={() => onToggle(kind, tally.name)}>
           <span className="qc-name">{tally.name}</span>
-          <span className="qc-count">{tally.count.toLocaleString()}</span>
+          <span className="qc-count">
+            {tally.count.toLocaleString()} <span className="qc-muted qc-ago">· {relativeTime(t, tally.lastAt, now)}</span>
+          </span>
           <span className="qc-tally-bar">
             <span style={{ width: `${(tally.count / max) * 100}%`, ...enter(position) }} />
           </span>
@@ -398,7 +421,7 @@ const TallyCard = memo(function TallyCard({
     )
   }
   return (
-    <Card index={index} title={title} hint={tallies.length > 0 ? tallies.length : undefined}>
+    <Card index={index} title={title} hint={scope ?? (tallies.length > 0 ? tallies.length : undefined)}>
       {tallies.length === 0 ? (
         <EmptyState compact icon={emptyIcon} title={emptyTitle} hint={emptyHint} />
       ) : (
@@ -496,6 +519,7 @@ const WorkspacesCard = memo(function WorkspacesCard({
                 title={folderParts(active.path).name}
                 rows={[
                   { label: t("kpiTokens"), value: `${formatTokens(active.tokens)} · ${formatPercent(total > 0 ? active.tokens / total : null, 0)}` },
+                  ...(active.credits > 0 ? [{ label: t("kpiCredits"), value: formatCredits(active.credits), color: "var(--qc-credits)" }] : []),
                   { label: t("tallySessions"), value: active.sessions.toLocaleString() },
                   { label: t("kpiActive"), value: formatDuration(active.activeMs) },
                   { label: t("lastActive"), value: relativeTime(t, active.lastAt) },
@@ -649,6 +673,7 @@ const SessionTile = memo(function SessionTile({
       <MiniStack cacheRead={session.cacheRead} prompt={session.prompt} output={session.output} />
       <span className="qc-session-meta">
         <span>{formatTokens(session.tokens)}</span>
+        {session.metered > 0 ? <span className="qc-credits-ink">{t("creditsShort", { value: formatCredits(session.credits) })}</span> : null}
         <span>{t("turnsShort", { count: session.turns })}</span>
         <span className="qc-session-context" data-tone={share !== null && share >= 0.8 ? contextTone(share) : undefined}>
           {share !== null ? <MiniRing ratio={share} tone={contextTone(share)} label={t("contextShare", { share: formatPercent(share, 0) })} /> : null}
@@ -671,6 +696,15 @@ function SessionTip({ session, t }: { readonly session: SessionCard; readonly t:
         { label: t("uncached"), value: formatTokens(Math.max(0, session.prompt - session.cacheRead)), color: SERIES.uncached },
         { label: t("output"), value: formatTokens(session.output), color: SERIES.output },
         { label: t("kpiRequests"), value: session.requests.toLocaleString() },
+        ...(session.metered > 0
+          ? [
+              {
+                label: t("kpiCredits"),
+                value: `${formatCredits(session.credits)}${session.metered < session.requests ? ` · ${session.metered.toLocaleString()}/${session.requests.toLocaleString()}` : ""}`,
+                color: "var(--qc-credits)",
+              },
+            ]
+          : []),
         {
           label: t("contextNow"),
           value: `${formatTokens(session.contextTokens)}${share !== null ? ` · ${formatPercent(share, 0)}` : ""}`,

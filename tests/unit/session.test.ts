@@ -3,31 +3,45 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { ringArcs } from "../../src/browser/charts.js"
+import { createTranslate } from "../../src/browser/i18n.js"
 import {
+  composition,
   contextGauge,
+  creditsSub,
   displayCommand,
   eventCounts,
   eventRequest,
   fileFacts,
+  fleetFacts,
+  fleetTree,
   promptDeltas,
+  requestSeries,
   runFacts,
+  seriesIndex,
   SLOW_MS,
   splitPath,
   timeline,
   timingParts,
+  turnSeries,
   visibleFiles,
   visibleRuns,
 } from "../../src/browser/session-model.js"
+import type { HostUsageReader } from "../../src/node/host-usage.js"
 import { SessionDetails } from "../../src/node/session.js"
 import { TranscriptLocator } from "../../src/node/transcripts.js"
-import type { CommandRun, ContextEvent, FileActivity, RequestPoint, SessionDetail } from "../../src/shared/types.js"
-import { assistant, human } from "./fixtures.js"
+import type { CommandRun, ContextEstimate, ContextEvent, FileActivity, FleetAgent, HostUsage, RequestPoint, SessionDetail } from "../../src/shared/types.js"
+import { assistant, human, toolUse } from "./fixtures.js"
 
-function request(prompt: number, cacheRead = 0): RequestPoint {
-  return { at: 0, turn: 1, prompt, cacheRead, output: 10, model: null, tools: [], latencyMs: null }
+function request(prompt: number, cacheRead = 0, extra: Partial<RequestPoint> = {}): RequestPoint {
+  return { at: 0, turn: 1, prompt, cacheRead, output: 10, model: null, tools: [], latencyMs: null, credits: null, cause: "tools", reply: null, ...extra }
 }
 
-function detail(requests: RequestPoint[], overrides: { window?: number | null; events?: ContextEvent[]; truncated?: number } = {}): SessionDetail {
+const NO_ESTIMATE: ContextEstimate = { user: 0, injected: 0, skills: 0, toolCalls: 0, reasoning: 0, answers: 0 }
+
+function detail(
+  requests: RequestPoint[],
+  overrides: { window?: number | null; events?: ContextEvent[]; truncated?: number; estimate?: Partial<ContextEstimate>; host?: HostUsage } = {},
+): SessionDetail {
   return {
     summary: {
       id: "s",
@@ -40,6 +54,9 @@ function detail(requests: RequestPoint[], overrides: { window?: number | null; e
       turns: 1,
       requests: requests.length,
       tokens: { prompt: 0, cacheRead: 0, cacheCreate: 0, output: 0 },
+      credits: 0,
+      originalCredits: 0,
+      metered: 0,
       contextTokens: requests.at(-1)?.prompt ?? 0,
       contextWindow: overrides.window === undefined ? 100_000 : overrides.window,
       compactions: 0,
@@ -50,6 +67,7 @@ function detail(requests: RequestPoint[], overrides: { window?: number | null; e
       tools: [],
       skills: [],
       commands: [],
+      dayTallies: [],
     },
     requests,
     requestsTruncated: overrides.truncated ?? 0,
@@ -58,6 +76,31 @@ function detail(requests: RequestPoint[], overrides: { window?: number | null; e
     commands: [],
     commandsTruncated: 0,
     timing: { modelMs: 0, toolMs: 0, compactMs: 0, timedOutput: 0, ribbon: [] },
+    prompts: [],
+    estimate: { ...NO_ESTIMATE, ...overrides.estimate },
+    host: overrides.host ?? null,
+    models: [],
+    agents: [],
+  }
+}
+
+function agent(id: string, parent: string | null, firstAt: number, extra: Partial<FleetAgent> = {}): FleetAgent {
+  return {
+    id,
+    parent,
+    type: null,
+    description: null,
+    model: null,
+    status: "done",
+    requests: 1,
+    tokens: 100,
+    credits: 0,
+    toolRuns: 0,
+    contextTokens: 0,
+    firstAt,
+    lastAt: firstAt + 1,
+    result: null,
+    ...extra,
   }
 }
 
@@ -116,21 +159,136 @@ describe("timeline", () => {
     // Keys stay put as the run grows, so a refresh doesn't remount the row.
     expect(timeline([retry(1), retry(2)])[0]?.key).toBe(timeline([retry(1)])[0]?.key)
   })
+
+  it("folds repeated identical injections but keeps different ones apart", () => {
+    const inject = (at: number, label: string): ContextEvent => ({ kind: "inject", at, item: "hook", label, count: null, tokens: 10, requestIndex: 0 })
+    const items = timeline([inject(1, "UserPromptSubmit"), inject(2, "UserPromptSubmit"), inject(3, "SessionStart")])
+    expect(items.map((item) => [item.event.at, item.count])).toEqual([
+      [3, 1],
+      [2, 2],
+    ])
+  })
 })
 
 describe("event and file filters", () => {
-  it("counts events per kind", () => {
+  it("counts events per filter group", () => {
     const error: ContextEvent = { kind: "error", at: 1, text: "x", requestIndex: 0 }
-    expect(eventCounts([compaction(1), error, { ...error, at: 2 }])).toEqual({ all: 3, compaction: 1, retry: 0, error: 2 })
+    const model: ContextEvent = { kind: "model", at: 1, from: "a", to: "b", requestIndex: 0 }
+    const mode: ContextEvent = { kind: "mode", at: 1, mode: "plan", active: true, requestIndex: 0 }
+    expect(eventCounts([compaction(1), error, { ...error, at: 2 }, model, mode])).toEqual({ all: 5, compaction: 1, inject: 0, switch: 2, issue: 2 })
   })
 
-  it("splits files into edited and read-only with line totals", () => {
-    const file = (path: string, writes: number, added = 0, removed = 0): FileActivity => ({ path, reads: 1, writes, added, removed, lastAt: 0 })
-    const files = [file("/a", 2, 10, 3), file("/b", 0), file("/c", 1, 1)]
-    expect(fileFacts(files)).toEqual({ counts: { all: 3, edited: 2, read: 1 }, added: 11, removed: 3 })
+  it("splits files into edited, read-only, searched and images with line totals", () => {
+    const file = (path: string, writes: number, extra: Partial<FileActivity> = {}): FileActivity => ({
+      path,
+      reads: 1,
+      writes,
+      added: 0,
+      removed: 0,
+      searches: 0,
+      image: false,
+      lastAt: 0,
+      ...extra,
+    })
+    const files = [
+      file("/a", 2, { added: 10, removed: 3 }),
+      file("/b", 0),
+      file("/c", 1, { added: 1 }),
+      file("/d.png", 0, { image: true }),
+      file("/e", 0, { reads: 0, searches: 3 }),
+    ]
+    expect(fileFacts(files)).toEqual({ counts: { all: 5, edited: 2, read: 2, searched: 1, images: 1 }, added: 11, removed: 3 })
     expect(visibleFiles(files, "edited").map((f) => f.path)).toEqual(["/a", "/c"])
-    expect(visibleFiles(files, "read").map((f) => f.path)).toEqual(["/b"])
+    expect(visibleFiles(files, "read").map((f) => f.path)).toEqual(["/b", "/d.png"])
+    expect(visibleFiles(files, "searched").map((f) => f.path)).toEqual(["/e"])
+    expect(visibleFiles(files, "images").map((f) => f.path)).toEqual(["/d.png"])
     expect(visibleFiles(files, "all")).toBe(files)
+  })
+})
+
+describe("trend series", () => {
+  it("folds requests into one column per turn, keeping the last prompt and summing the rest", () => {
+    const requests = [
+      request(100, 0, { turn: 1, cause: "prompt", tools: ["Read"], latencyMs: 5, credits: 0.5 }),
+      request(150, 0, { turn: 1, tools: ["Edit"], latencyMs: null, credits: null, reply: "done" }),
+      request(90, 0, { turn: 2, cause: "prompt" }),
+    ]
+    const series = turnSeries(requests)
+    expect(series.points.map((point) => [point.turn, point.prompt, point.output, point.cause, point.reply])).toEqual([
+      [1, 150, 20, "prompt", "done"],
+      [2, 90, 10, "prompt", null],
+    ])
+    expect(series.points[0]).toMatchObject({ tools: ["Read", "Edit"], latencyMs: 5, credits: 0.5 })
+    expect([series.first, series.last]).toEqual([
+      [0, 2],
+      [1, 2],
+    ])
+    expect([seriesIndex(series, 1), seriesIndex(series, 2), seriesIndex(series, 3)]).toEqual([0, 1, null])
+    const flat = requestSeries(requests)
+    expect(flat.points).toBe(requests)
+    expect(seriesIndex(flat, 2)).toBe(2)
+  })
+})
+
+describe("composition", () => {
+  it("gives the system prompt and tools what the estimates leave of the prompt", () => {
+    const parts = composition(detail([request(10_000)], { estimate: { user: 1_000, toolCalls: 3_000, skills: 500 } }))
+    expect(parts.source).toBe("estimate")
+    expect(parts.parts).toEqual([
+      { key: "system", tokens: 5_500 },
+      { key: "skills", tokens: 500 },
+      { key: "user", tokens: 1_000 },
+      { key: "toolCalls", tokens: 3_000 },
+    ])
+  })
+
+  it("scales estimates that overshoot the prompt down to fit it", () => {
+    const parts = composition(detail([request(1_000)], { estimate: { user: 1_000, answers: 1_000 } }))
+    expect(parts.parts).toEqual([
+      { key: "user", tokens: 500 },
+      { key: "answers", tokens: 500 },
+    ])
+  })
+
+  it("sizes the system prompt, tools and skills from Qoder's meter and spreads the rest over the estimates", () => {
+    const host: HostUsage = { at: 1, used: 0.1, systemPrompt: 0.02, tools: 0.03, skills: 0.01, messages: 0.04 }
+    const parts = composition(detail([request(10_000)], { window: 100_000, host, estimate: { user: 1_000, toolCalls: 1_000, skills: 9_999 } }))
+    expect(parts.source).toBe("host")
+    expect(parts.parts).toEqual([
+      { key: "systemPrompt", tokens: 2_000 },
+      { key: "tools", tokens: 3_000 },
+      { key: "skills", tokens: 1_000 },
+      { key: "user", tokens: 1_000 },
+      { key: "toolCalls", tokens: 1_000 },
+    ])
+    // Without estimates the rest is plain messages; without a window the meter can't be sized.
+    expect(composition(detail([request(10_000)], { window: 100_000, host })).parts.at(-1)).toEqual({ key: "messages", tokens: 4_000 })
+    expect(composition(detail([request(10_000)], { window: null, host })).source).toBe("estimate")
+    expect(composition(detail([])).parts).toEqual([])
+  })
+})
+
+describe("fleet", () => {
+  it("nests subagents under their launcher in launch order, keeping orphans and cycles visible", () => {
+    const agents = [agent("b", null, 2), agent("a", null, 1), agent("a1", "a", 3), agent("a1x", "a1", 4), agent("lost", "gone", 5), agent("self", "self", 6)]
+    expect(fleetTree(agents).map((row) => `${row.agent.id}:${row.depth}`)).toEqual(["a:0", "a1:1", "a1x:2", "b:0", "lost:0", "self:0"])
+  })
+
+  it("counts agents by status and sums their tokens and credits", () => {
+    const facts = fleetFacts([agent("a", null, 1, { status: "running", credits: 1.5 }), agent("b", null, 2, { status: "failed", credits: 0.5 })])
+    expect(facts).toEqual({ counts: { running: 1, done: 0, failed: 1, stopped: 0, unknown: 0 }, tokens: 200, credits: 2 })
+  })
+})
+
+describe("creditsSub", () => {
+  const t = createTranslate("en")
+  it("names unmetered requests first, then the discount", () => {
+    expect(creditsSub(0, 0, 0, 0, t)).toBeUndefined()
+    expect(creditsSub(0, 0, 0, 4, t)).toBe("Not metered")
+    expect(creditsSub(1, 1, 1, 4, t)).toBe("1 of 4 requests metered")
+    expect(creditsSub(1, 1, 2, 2_588, t)).toBe("2 of 2,588 requests metered")
+    expect(creditsSub(1, 2, 4, 4, t)).toBe("2 before discounts")
+    expect(creditsSub(1, 1, 4, 4, t)).toBeUndefined()
   })
 })
 
@@ -184,6 +342,30 @@ describe("SessionDetails", () => {
     await writeFile(file, lines([human("go", 0), assistant("m1", 1, [], { input_tokens: 300, output_tokens: 30 }), assistant("m2", 2, [], { input_tokens: 900, output_tokens: 30 })]))
     const second = await details.load(sessionId, first.version)
     expect(second.status === "ok" && second.detail.summary.contextTokens).toBe(900)
+  })
+
+  it("labels subagents from their meta files, takes status from task files and adds Qoder's meter", async () => {
+    const projects = join(root, "projects")
+    const sessionId = "11111111-2222-3333-4444-555555555555"
+    const subagents = join(projects, "-work-demo", sessionId, "subagents")
+    await mkdir(subagents, { recursive: true })
+    const lines = (entries: unknown[]) => entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n"
+    await writeFile(
+      join(projects, "-work-demo", `${sessionId}.jsonl`),
+      lines([human("go", 0), assistant("m1", 1, [toolUse("call-1", "Agent", { prompt: "look" })], { input_tokens: 300, output_tokens: 30 })]),
+    )
+    await writeFile(join(subagents, "agent-aExplore-1.jsonl"), lines([assistant("s1", 2, [], { input_tokens: 200, output_tokens: 20, credits: 0.25 })]))
+    await writeFile(join(subagents, "agent-aExplore-1.meta.json"), JSON.stringify({ agentType: "Explore", description: "Find it", toolUseId: "call-1" }))
+    await writeFile(join(subagents, "task-1.json"), JSON.stringify({ agentId: "aExplore-1", status: "failed", resolvedModel: "ultimate", result: "  Gave\nup  " }))
+    await writeFile(join(subagents, "task-broken.json"), "{")
+    const meter: HostUsage = { at: 5, used: 0.1, systemPrompt: 0.02, tools: 0.03, skills: 0.01, messages: 0.04 }
+    const host = { read: async (id: string) => (id === sessionId ? meter : null) } as unknown as HostUsageReader
+    const loaded = await new SessionDetails(new TranscriptLocator(projects), undefined, host).load(sessionId)
+    if (loaded.status !== "ok") throw new Error(loaded.status)
+    expect(loaded.detail.host).toEqual(meter)
+    expect(loaded.detail.agents).toEqual([
+      expect.objectContaining({ id: "aExplore-1", parent: null, type: "Explore", description: "Find it", status: "failed", model: "dfmodel", result: "Gave up", credits: 0.25 }),
+    ])
   })
 })
 

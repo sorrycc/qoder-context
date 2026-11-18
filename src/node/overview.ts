@@ -2,14 +2,17 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { DAY_MS, lastDays, localDay, rangeDays } from "../shared/days.js"
 import type { DayBucket, Overview, OverviewResponse, Range, SessionCard, SessionSummary, Tally, WorkspaceTally } from "../shared/types.js"
+import { roundCredits } from "./fold.js"
 import { FoldCache } from "./folds.js"
 import { mapLimit, type TranscriptLocator } from "./transcripts.js"
 
 export const HEATMAP_DAYS = 56
-const CACHE_VERSION = 5
+const CACHE_VERSION = 6
 const CACHE_ENTRY_LIMIT = 3_000
 const SESSION_CARD_LIMIT = 300
 const TALLY_LIMIT = 24
+/** Per-day tallies ride along with every overview, for every heatmap day, so they're kept short. */
+const DAY_TALLY_LIMIT = 12
 const FOLD_CONCURRENCY = 4
 
 interface CacheEntry {
@@ -133,22 +136,38 @@ export class OverviewIndex {
   }
 }
 
+type TallyTotals = Map<string, { count: number; lastAt: number }>
+type DayTallyTotals = Record<"tools" | "skills" | "commands", TallyTotals>
+
 export function aggregate(summaries: readonly SessionSummary[], range: Range, now: number, scanned = summaries.length): Overview {
   const inRange = new Set(lastDays(rangeDays(range), now))
   const weekDays = lastDays(7, now)
   const heatDays = lastDays(HEATMAP_DAYS, now)
+  const onHeatmap = new Set(heatDays)
   const byDay = new Map<string, Omit<DayBucket, "day">>()
-  const kpi = { sessions: 0, tokens: 0, turns: 0, requests: 0, toolRuns: 0, activeMs: 0, shellRuns: 0, shellFailures: 0 }
+  const kpi = { sessions: 0, tokens: 0, turns: 0, requests: 0, toolRuns: 0, activeMs: 0, shellRuns: 0, shellFailures: 0, credits: 0, metered: 0 }
   const composition = { cacheRead: 0, uncached: 0, output: 0 }
-  const tools = new Map<string, { count: number; lastAt: number }>()
-  const skills = new Map<string, { count: number; lastAt: number }>()
-  const commands = new Map<string, { count: number; lastAt: number }>()
-  const workspaces = new Map<string, { sessions: number; tokens: number; activeMs: number; lastAt: number }>()
+  const rangeTallies: DayTallyTotals = { tools: new Map(), skills: new Map(), commands: new Map() }
+  const tallyDays = new Map<string, DayTallyTotals>()
+  const workspaces = new Map<string, { sessions: number; tokens: number; credits: number; activeMs: number; lastAt: number }>()
   const cards: SessionCard[] = []
   let prompt = 0
 
   for (const summary of summaries) {
     for (const bucket of summary.days) byDay.set(bucket.day, addBucket(byDay.get(bucket.day) ?? emptyTotals(), bucket))
+    // Tallies are counted on the day each run happened, so the range and a picked day are exact.
+    for (const tallies of summary.dayTallies) {
+      if (!onHeatmap.has(tallies.day)) continue
+      let day = tallyDays.get(tallies.day)
+      if (!day) {
+        day = { tools: new Map(), skills: new Map(), commands: new Map() }
+        tallyDays.set(tallies.day, day)
+      }
+      for (const kind of TALLY_KINDS) {
+        merge(day[kind], tallies[kind])
+        if (inRange.has(tallies.day)) merge(rangeTallies[kind], tallies[kind])
+      }
+    }
     const active = summary.days.filter((bucket) => inRange.has(bucket.day))
     if (active.length === 0) continue
     kpi.sessions += 1
@@ -161,10 +180,13 @@ export function aggregate(summaries: readonly SessionSummary[], range: Range, no
     kpi.activeMs += own.activeMs
     kpi.shellRuns += own.shellRuns
     kpi.shellFailures += own.shellFailures
+    kpi.credits += own.credits
+    kpi.metered += own.metered
     if (summary.cwd) {
-      const workspace = workspaces.get(summary.cwd) ?? { sessions: 0, tokens: 0, activeMs: 0, lastAt: 0 }
+      const workspace = workspaces.get(summary.cwd) ?? { sessions: 0, tokens: 0, credits: 0, activeMs: 0, lastAt: 0 }
       workspace.sessions += 1
       workspace.tokens += own.tokens
+      workspace.credits += own.credits
       workspace.activeMs += own.activeMs
       workspace.lastAt = Math.max(workspace.lastAt, summary.lastAt)
       workspaces.set(summary.cwd, workspace)
@@ -173,9 +195,6 @@ export function aggregate(summaries: readonly SessionSummary[], range: Range, no
     composition.cacheRead += summary.tokens.cacheRead
     composition.uncached += Math.max(0, summary.tokens.prompt - summary.tokens.cacheRead)
     composition.output += summary.tokens.output
-    merge(tools, summary.tools)
-    merge(skills, summary.skills)
-    merge(commands, summary.commands)
     cards.push(toCard(summary))
   }
 
@@ -184,18 +203,24 @@ export function aggregate(summaries: readonly SessionSummary[], range: Range, no
     range,
     generatedAt: now,
     scannedFiles: scanned,
-    kpi: { ...kpi, cacheHitRate: prompt > 0 ? composition.cacheRead / prompt : null },
+    kpi: { ...kpi, credits: roundCredits(kpi.credits), cacheHitRate: prompt > 0 ? composition.cacheRead / prompt : null },
     week: weekDays.map((day) => {
-      const bucket = byDay.get(day)
-      return { day, ...(bucket ?? emptyTotals()) }
+      const bucket = byDay.get(day) ?? emptyTotals()
+      return { day, ...bucket, credits: roundCredits(bucket.credits) }
     }),
     heatmap: heatDays.map((day) => ({ day, tokens: byDay.get(day)?.tokens ?? 0, requests: byDay.get(day)?.requests ?? 0 })),
     composition,
-    tools: topTallies(tools),
-    skills: topTallies(skills),
-    commands: topTallies(commands),
+    tools: topTallies(rangeTallies.tools),
+    skills: topTallies(rangeTallies.skills),
+    commands: topTallies(rangeTallies.commands),
+    dayTallies: Object.fromEntries(
+      [...tallyDays].map(([day, tallies]) => [
+        day,
+        { tools: topTallies(tallies.tools, DAY_TALLY_LIMIT), skills: topTallies(tallies.skills, DAY_TALLY_LIMIT), commands: topTallies(tallies.commands, DAY_TALLY_LIMIT) },
+      ]),
+    ),
     workspaces: [...workspaces]
-      .map(([path, entry]): WorkspaceTally => ({ path, ...entry }))
+      .map(([path, entry]): WorkspaceTally => ({ path, ...entry, credits: roundCredits(entry.credits) }))
       .sort((a, b) => b.tokens - a.tokens || b.lastAt - a.lastAt)
       .slice(0, TALLY_LIMIT),
     sessions: cards.slice(0, SESSION_CARD_LIMIT),
@@ -217,8 +242,10 @@ export function hash(text: string): string {
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)
 }
 
+const TALLY_KINDS = ["tools", "skills", "commands"] as const
+
 function emptyTotals(): { -readonly [K in Exclude<keyof DayBucket, "day">]: number } {
-  return { tokens: 0, requests: 0, turns: 0, toolRuns: 0, activeMs: 0, shellRuns: 0, shellFailures: 0 }
+  return { tokens: 0, requests: 0, credits: 0, metered: 0, turns: 0, toolRuns: 0, activeMs: 0, shellRuns: 0, shellFailures: 0 }
 }
 
 /** Adds `bucket` into `total`. */
@@ -241,6 +268,8 @@ function toCard(summary: SessionSummary): SessionCard {
     cacheRead: summary.tokens.cacheRead,
     prompt: summary.tokens.prompt,
     output: summary.tokens.output,
+    credits: summary.credits,
+    metered: summary.metered,
     days: summary.days.map((bucket) => bucket.day),
     tools: summary.tools.map((tally) => tally.name),
     skills: summary.skills.map((tally) => tally.name),
@@ -248,7 +277,7 @@ function toCard(summary: SessionSummary): SessionCard {
   }
 }
 
-function merge(target: Map<string, { count: number; lastAt: number }>, tallies: readonly Tally[]): void {
+function merge(target: TallyTotals, tallies: readonly Tally[]): void {
   for (const tally of tallies) {
     const entry = target.get(tally.name)
     if (entry) {
@@ -260,9 +289,9 @@ function merge(target: Map<string, { count: number; lastAt: number }>, tallies: 
   }
 }
 
-function topTallies(source: Map<string, { count: number; lastAt: number }>): Tally[] {
+function topTallies(source: TallyTotals, limit = TALLY_LIMIT): Tally[] {
   return [...source]
     .map(([name, entry]) => ({ name, ...entry }))
     .sort((a, b) => b.count - a.count || b.lastAt - a.lastAt)
-    .slice(0, TALLY_LIMIT)
+    .slice(0, limit)
 }

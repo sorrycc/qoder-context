@@ -5,6 +5,15 @@ export function formatTokens(value: number): string {
   return String(Math.round(value))
 }
 
+/** Qoder credits: two decimals while small, one up to a thousand, then k/M like tokens. */
+export function formatCredits(value: number): string {
+  if (value <= 0) return "0"
+  if (value < 0.01) return "<0.01"
+  if (value < 10) return value.toFixed(2).replace(/\.?0+$/, "")
+  if (value < 1_000) return value.toFixed(1).replace(/\.0$/, "")
+  return formatTokens(value)
+}
+
 export function formatPercent(ratio: number | null, digits = 1): string {
   return ratio === null || !Number.isFinite(ratio) ? "—" : `${(ratio * 100).toFixed(digits)}%`
 }

@@ -20,6 +20,8 @@ function card(id: string, overrides: Partial<SessionCard> = {}): SessionCard {
     cacheRead: 0,
     prompt: 0,
     output: 0,
+    credits: 0,
+    metered: 0,
     days: [],
     tools: [],
     skills: [],
@@ -37,10 +39,13 @@ describe("visibleSessions", () => {
     card("c", { title: null, cwd: "/Users/me/web", tokens: 20, contextTokens: 200, tools: ["Bash", "Read"] }),
   ]
 
-  it("keeps the given order for recent and sorts by tokens or context", () => {
+  it("keeps the given order for recent and sorts by tokens, credits or context", () => {
     expect(visibleSessions(sessions, none, "recent").map((s) => s.id)).toEqual(["a", "b", "c"])
     expect(visibleSessions(sessions, none, "tokens").map((s) => s.id)).toEqual(["b", "c", "a"])
     expect(visibleSessions(sessions, none, "context").map((s) => s.id)).toEqual(["a", "c", "b"])
+    // Equal credits fall back to tokens.
+    const priced = sessions.map((session) => ({ ...session, credits: session.id === "c" ? 2 : 0 }))
+    expect(visibleSessions(priced, none, "credits").map((s) => s.id)).toEqual(["c", "b", "a"])
   })
 
   it("filters by day, tally and every search term across title and folder", () => {

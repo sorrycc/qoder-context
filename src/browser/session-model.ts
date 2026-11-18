@@ -1,4 +1,6 @@
-import type { CommandRun, ContextEvent, FileActivity, RequestPoint, SessionDetail, TimingStats } from "../shared/types.js"
+import type { CommandRun, ContextEvent, FileActivity, FleetAgent, RequestPoint, SessionDetail, TimingStats } from "../shared/types.js"
+import { formatCredits, formatPercent } from "../shared/format.js"
+import type { Translate } from "./i18n.js"
 import { searchTerms } from "./lists.js"
 
 /** Requests looked back over to estimate how fast the context grows. */
@@ -57,12 +59,20 @@ export interface TimelineItem {
   readonly firstAt: number
 }
 
-/** Newest-first events, with runs of identical retries or errors folded into one item. */
+/** Events that repeat with the same content fold together: retries, errors and identical injections. */
+function foldKey(event: ContextEvent): string | null {
+  if (event.kind === "retry" || event.kind === "error") return `${event.kind}:${event.text}`
+  if (event.kind === "inject") return `inject:${event.item}:${event.label}`
+  return null
+}
+
+/** Newest-first events, with runs of identical retries, errors or injections folded into one item. */
 export function timeline(events: readonly ContextEvent[]): TimelineItem[] {
   const items: TimelineItem[] = []
   for (const event of events) {
     const previous = items.at(-1)
-    if (previous && event.kind !== "compaction" && previous.event.kind === event.kind && previous.event.text === event.text) {
+    const key = foldKey(event)
+    if (previous && key !== null && foldKey(previous.event) === key) {
       items[items.length - 1] = { ...previous, event, count: previous.count + 1 }
       continue
     }
@@ -71,21 +81,34 @@ export function timeline(events: readonly ContextEvent[]): TimelineItem[] {
   return items.reverse()
 }
 
-export type EventFilter = "all" | ContextEvent["kind"]
+/** Event kinds as the filter chips group them. */
+export type EventGroup = "compaction" | "inject" | "switch" | "issue"
+export type EventFilter = "all" | EventGroup
 
-/** Events per kind, for filter chips; `all` counts every event. */
+export const EVENT_GROUPS: Readonly<Record<ContextEvent["kind"], EventGroup>> = {
+  compaction: "compaction",
+  inject: "inject",
+  model: "switch",
+  mode: "switch",
+  retry: "issue",
+  error: "issue",
+}
+
+/** Events per group, for filter chips; `all` counts every event. */
 export function eventCounts(events: readonly ContextEvent[]): Readonly<Record<EventFilter, number>> {
-  const counts = { all: events.length, compaction: 0, retry: 0, error: 0 }
-  for (const event of events) counts[event.kind] += 1
+  const counts = { all: events.length, compaction: 0, inject: 0, switch: 0, issue: 0 }
+  for (const event of events) counts[EVENT_GROUPS[event.kind]] += 1
   return counts
 }
 
-export type FileFilter = "all" | "edited" | "read"
+export type FileFilter = "all" | "edited" | "read" | "searched" | "images"
 
 const FILE_FILTERS: Record<FileFilter, (file: FileActivity) => boolean> = {
   all: () => true,
   edited: (file) => file.writes > 0,
-  read: (file) => file.writes === 0,
+  read: (file) => file.writes === 0 && file.reads > 0,
+  searched: (file) => file.searches > 0,
+  images: (file) => file.image,
 }
 
 export interface FileFacts {
@@ -95,15 +118,15 @@ export interface FileFacts {
 }
 
 export function fileFacts(files: readonly FileActivity[]): FileFacts {
-  let edited = 0
+  const counts = { all: files.length, edited: 0, read: 0, searched: 0, images: 0 }
   let added = 0
   let removed = 0
   for (const file of files) {
-    if (file.writes > 0) edited += 1
+    for (const kind of ["edited", "read", "searched", "images"] as const) if (FILE_FILTERS[kind](file)) counts[kind] += 1
     added += file.added
     removed += file.removed
   }
-  return { counts: { all: files.length, edited, read: files.length - edited }, added, removed }
+  return { counts, added, removed }
 }
 
 export function visibleFiles(files: readonly FileActivity[], filter: FileFilter): readonly FileActivity[] {
@@ -202,6 +225,172 @@ export function visibleRuns(
   result.reverse()
   if (options.sort === "slowest") result.sort((a, b) => (b.durationMs ?? -1) - (a.durationMs ?? -1))
   return result
+}
+
+export type TrendUnit = "request" | "turn"
+
+/** The trend's columns: one per request, or one per turn with the requests it spans. */
+export interface TrendSeries {
+  readonly unit: TrendUnit
+  readonly points: readonly RequestPoint[]
+  /** Index into the requests of each column's first and last request. */
+  readonly first: readonly number[]
+  readonly last: readonly number[]
+}
+
+export function requestSeries(requests: readonly RequestPoint[]): TrendSeries {
+  const indexes = requests.map((_, index) => index)
+  return { unit: "request", points: requests, first: indexes, last: indexes }
+}
+
+/**
+ * One column per turn: the prompt as its last request sent it (what the turn left in the window),
+ * with the turn's output, tools, model time and credits added up.
+ */
+export function turnSeries(requests: readonly RequestPoint[]): TrendSeries {
+  const points: RequestPoint[] = []
+  const first: number[] = []
+  const last: number[] = []
+  requests.forEach((request, index) => {
+    const at = points.length - 1
+    const previous = points[at]
+    if (previous && previous.turn === request.turn) {
+      points[at] = {
+        ...request,
+        output: previous.output + request.output,
+        tools: [...previous.tools, ...request.tools],
+        latencyMs: previous.latencyMs === null && request.latencyMs === null ? null : (previous.latencyMs ?? 0) + (request.latencyMs ?? 0),
+        credits: previous.credits === null && request.credits === null ? null : (previous.credits ?? 0) + (request.credits ?? 0),
+        cause: previous.cause,
+        reply: request.reply ?? previous.reply,
+      }
+      last[at] = index
+      return
+    }
+    points.push(request)
+    first.push(index)
+    last.push(index)
+  })
+  return { unit: "turn", points, first, last }
+}
+
+/** The column of `series` that holds request `index`, or null when none does. */
+export function seriesIndex(series: TrendSeries, index: number): number | null {
+  for (let column = 0; column < series.points.length; column += 1) {
+    if (index >= series.first[column]! && index <= series.last[column]!) return column
+  }
+  return null
+}
+
+export type CompositionKey = "system" | "systemPrompt" | "tools" | "skills" | "user" | "injected" | "toolCalls" | "reasoning" | "answers" | "messages"
+
+export interface Composition {
+  /** Parts in display order, each in tokens; together they make up `total`. */
+  readonly parts: readonly { readonly key: CompositionKey; readonly tokens: number }[]
+  readonly total: number
+  /** "host" when Qoder's own meter sized the system prompt, tools and skills. */
+  readonly source: "estimate" | "host"
+}
+
+const MESSAGE_KEYS = ["user", "injected", "toolCalls", "reasoning", "answers"] as const
+
+/**
+ * What the window holds now, split by kind. The transcript gives estimates for what it carries;
+ * the system prompt and tool schemas get what is left of the reported prompt. When Qoder's meter
+ * is known (and the window with it), it sizes the system prompt, tools and skills instead, and the
+ * estimates share the rest. Estimates that overshoot the prompt are scaled down to fit it.
+ */
+export function composition(detail: SessionDetail): Composition {
+  const total = detail.summary.contextTokens
+  const window = detail.summary.contextWindow
+  const { estimate, host } = detail
+  if (total <= 0) return { parts: [], total: 0, source: "estimate" }
+  const parts: { key: CompositionKey; tokens: number }[] = []
+  const spread = (keys: readonly (keyof typeof estimate)[], room: number) => {
+    const sum = keys.reduce((acc, key) => acc + estimate[key], 0)
+    const scale = sum > room ? room / sum : 1
+    for (const key of keys) parts.push({ key, tokens: estimate[key] * scale })
+    return Math.min(sum, room)
+  }
+  if (host && window && window > 0) {
+    const fixed = [
+      { key: "systemPrompt", tokens: host.systemPrompt * window },
+      { key: "tools", tokens: host.tools * window },
+      { key: "skills", tokens: host.skills * window },
+    ] as const
+    const fixedSum = fixed.reduce((acc, part) => acc + part.tokens, 0)
+    const scale = fixedSum > total ? total / fixedSum : 1
+    for (const part of fixed) parts.push({ key: part.key, tokens: part.tokens * scale })
+    const room = Math.max(0, total - fixedSum * scale)
+    const used = spread(MESSAGE_KEYS, room)
+    if (used === 0 && room > 0) parts.push({ key: "messages", tokens: room })
+    return finishComposition(parts, total, "host")
+  }
+  const used = spread(["skills", ...MESSAGE_KEYS], total)
+  parts.unshift({ key: "system", tokens: total - used })
+  return finishComposition(parts, total, "estimate")
+}
+
+function finishComposition(parts: { key: CompositionKey; tokens: number }[], total: number, source: Composition["source"]): Composition {
+  return { parts: parts.map((part) => ({ key: part.key, tokens: Math.round(part.tokens) })).filter((part) => part.tokens > 0), total, source }
+}
+
+export interface FleetRow {
+  readonly agent: FleetAgent
+  readonly depth: number
+}
+
+/** Subagents as a tree in launch order: each under the agent that launched it, unknown launchers at the top. */
+export function fleetTree(agents: readonly FleetAgent[]): FleetRow[] {
+  const ids = new Set(agents.map((agent) => agent.id))
+  const children = new Map<string | null, FleetAgent[]>()
+  for (const agent of agents) {
+    const parent = agent.parent !== null && ids.has(agent.parent) && agent.parent !== agent.id ? agent.parent : null
+    const list = children.get(parent)
+    if (list) list.push(agent)
+    else children.set(parent, [agent])
+  }
+  const rows: FleetRow[] = []
+  const seen = new Set<string>()
+  const walk = (parent: string | null, depth: number) => {
+    for (const agent of [...(children.get(parent) ?? [])].sort((a, b) => a.firstAt - b.firstAt)) {
+      if (seen.has(agent.id)) continue
+      seen.add(agent.id)
+      rows.push({ agent, depth })
+      walk(agent.id, depth + 1)
+    }
+  }
+  walk(null, 0)
+  // A launch cycle leaves agents unreached; list them at the top rather than drop them.
+  for (const agent of agents) if (!seen.has(agent.id)) rows.push({ agent, depth: 0 })
+  return rows
+}
+
+export interface FleetFacts {
+  readonly counts: Readonly<Record<FleetAgent["status"], number>>
+  readonly tokens: number
+  readonly credits: number
+}
+
+export function fleetFacts(agents: readonly FleetAgent[]): FleetFacts {
+  const counts = { running: 0, done: 0, failed: 0, stopped: 0, unknown: 0 }
+  let tokens = 0
+  let credits = 0
+  for (const agent of agents) {
+    counts[agent.status] += 1
+    tokens += agent.tokens
+    credits += agent.credits
+  }
+  return { counts, tokens, credits }
+}
+
+/** What a credits figure leaves out: requests that weren't metered, or else the discount it got. */
+export function creditsSub(credits: number, original: number, metered: number, requests: number, t: Translate): string | undefined {
+  if (requests === 0) return undefined
+  if (metered === 0) return t("creditsNone")
+  // Counts rather than a share, which would round a handful of metered requests down to 0%.
+  if (metered < requests) return t("creditsMetered", { metered, count: requests })
+  return original > credits + 0.005 ? t("creditsList", { value: formatCredits(original) }) : undefined
 }
 
 export interface TimingPart {
